@@ -194,6 +194,12 @@ def build_form(prefix, defaults=None):
 
         html.Button("▶  Simulate", id=f"{prefix}-btn",
                     n_clicks=0, className="btn-primary"),
+
+        # Immediate status message — updated via clientside callback on click
+        html.Div(id=f"{prefix}-status", style={
+            "fontSize":"12px","color":COL_BLUE,"marginTop":"10px",
+            "minHeight":"18px","fontStyle":"italic",
+        }),
     ], className="form-panel")
 
 
@@ -784,16 +790,78 @@ def designer_layout():
             # Right results
             _card([
                 _section_header("Simulation Results"),
-                html.Div(id="designer-results",
-                         children=html.Div([
-                             html.Div("👈", style={"fontSize":"40px","marginBottom":"10px"}),
-                             html.P("Set procedure parameters and click  ▶ Simulate.",
-                                    style={"color":COL_GREY,"fontSize":"14px"}),
-                         ], style={"textAlign":"center","paddingTop":"60px"})),
+                dcc.Loading(
+                    id="designer-loading",
+                    type="circle",
+                    color=COL_BLUE,
+                    overlay_style={"visibility":"visible","filter":"blur(1px)"},
+                    custom_spinner=html.Div([
+                        html.Div("⚙️", style={"fontSize":"32px","marginBottom":"8px"}),
+                        html.Div("Running simulation…",
+                                 style={"fontWeight":"700","color":COL_NAVY,"fontSize":"15px"}),
+                        html.Div("Monte Carlo sampling · Calibrating · Benchmarking",
+                                 style={"fontSize":"11px","color":COL_GREY,"marginTop":"4px"}),
+                    ], style={"textAlign":"center","padding":"50px 20px"}),
+                    children=html.Div(id="designer-results",
+                        children=html.Div([
+                            html.Div("👈", style={"fontSize":"40px","marginBottom":"10px"}),
+                            html.P("Set procedure parameters and click  ▶ Simulate.",
+                                   style={"color":COL_GREY,"fontSize":"14px"}),
+                        ], style={"textAlign":"center","paddingTop":"60px"})),
+                ),
             ], style={"flex":"1","marginLeft":"16px"}),
         ], style={"display":"flex","padding":"20px","alignItems":"flex-start","gap":"0"}),
     ])
 
+
+# ── Clientside callbacks: immediate "Computing…" feedback on button click ──
+# These run in the browser with zero server round-trip, so feedback is instant.
+
+app.clientside_callback(
+    """
+    function(n) {
+        if (n && n > 0) {
+            return "⏳  Computing simulation — please wait…";
+        }
+        return "";
+    }
+    """,
+    Output("d-status",       "children"),
+    Input("d-btn",           "n_clicks"),
+    prevent_initial_call=True,
+)
+
+app.clientside_callback(
+    """
+    function(n) {
+        if (n && n > 0) {
+            return "⏳  Running comparison — please wait…";
+        }
+        return "";
+    }
+    """,
+    Output("compare-status", "children"),
+    Input("compare-btn",     "n_clicks"),
+    prevent_initial_call=True,
+)
+
+# ca-status and cb-status for the two scenario forms
+app.clientside_callback(
+    """
+    function(n) { return ""; }
+    """,
+    Output("ca-status", "children"),
+    Input("ca-btn",     "n_clicks"),
+    prevent_initial_call=True,
+)
+app.clientside_callback(
+    """
+    function(n) { return ""; }
+    """,
+    Output("cb-status", "children"),
+    Input("cb-btn",     "n_clicks"),
+    prevent_initial_call=True,
+)
 
 # Procedure type description callback (Tab 1)
 @app.callback(Output("d-proc-desc","children"), Input("d-proc","value"))
@@ -802,7 +870,8 @@ def update_proc_desc_d(proc):
 
 
 @app.callback(
-    Output("designer-results","children"),
+    [Output("designer-results","children"),
+     Output("d-status","children")],
     Input("d-btn","n_clicks"),
     [State("d-country","value"), State("d-proc","value"),   State("d-ctype","value"),
      State("d-cpv","value"),     State("d-crit","value"),   State("d-val","value"),
@@ -918,7 +987,7 @@ def run_designer(n, country, proc, ctype, cpv, crit, val, prep, dur, pw, flags):
                   "justifyContent":"center","paddingLeft":"20px"}),
     ], style={"display":"flex","gap":"20px","alignItems":"center"})
 
-    return html.Div([kpi_row, dist_row, gauge_row])
+    return html.Div([kpi_row, dist_row, gauge_row]), ""  # "" clears the status message
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -951,9 +1020,26 @@ def comparator_layout():
                                "backgroundColor":COL_NAVY,"color":"white","border":"none",
                                "borderRadius":"6px","cursor":"pointer",
                                "boxShadow":"0 2px 8px rgba(0,0,0,0.18)"}),
+            html.Div(id="compare-status", style={
+                "fontSize":"12px","color":COL_BLUE,"marginTop":"8px",
+                "minHeight":"18px","fontStyle":"italic",
+            }),
         ], style={"textAlign":"center","padding":"16px"}),
 
-        html.Div(id="compare-results", style={"padding":"0 20px 20px"}),
+        dcc.Loading(
+            id="compare-loading",
+            type="circle",
+            color=COL_BLUE,
+            overlay_style={"visibility":"visible","filter":"blur(1px)"},
+            custom_spinner=html.Div([
+                html.Div("⚙️", style={"fontSize":"32px","marginBottom":"8px"}),
+                html.Div("Comparing scenarios…",
+                         style={"fontWeight":"700","color":COL_NAVY,"fontSize":"15px"}),
+                html.Div("Simulating A · Simulating B · Computing deltas",
+                         style={"fontSize":"11px","color":COL_GREY,"marginTop":"4px"}),
+            ], style={"textAlign":"center","padding":"50px 20px"}),
+            children=html.Div(id="compare-results", style={"padding":"0 20px 20px"}),
+        ),
     ])
 
 
@@ -967,7 +1053,8 @@ def upd_desc_cb(p): return PROC_DESCRIPTIONS.get(p,"")
 
 
 @app.callback(
-    Output("compare-results","children"),
+    [Output("compare-results","children"),
+     Output("compare-status","children")],
     Input("compare-btn","n_clicks"),
     [State("ca-country","value"), State("ca-proc","value"),  State("ca-ctype","value"),
      State("ca-cpv","value"),     State("ca-crit","value"),  State("ca-val","value"),
@@ -1053,7 +1140,7 @@ def run_compare(n,
             html.Div([dcc.Graph(figure=overlay("duration","Duration (days)"),
                                 config={"displayModeBar":False})], style={"flex":"1"}),
         ], style={"display":"flex","gap":"10px"}),
-    ])
+    ]), ""  # "" clears the status message
 
 
 # ══════════════════════════════════════════════════════════════════
