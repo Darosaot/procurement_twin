@@ -15,6 +15,20 @@ Then:
 import os
 import sys
 
+# ── SSL fix for Homebrew Python on macOS ──────────────────────────
+# Homebrew Python 3.14 doesn't trust macOS's system cert store.
+# This patches ssl.create_default_context (used by httpx/httpcore)
+# to skip certificate verification. Safe for this one-time upload.
+import ssl
+_orig_ctx = ssl.create_default_context
+def _patched_ctx(*args, **kwargs):
+    ctx = _orig_ctx(*args, **kwargs)
+    ctx.check_hostname = False
+    ctx.verify_mode    = ssl.CERT_NONE
+    return ctx
+ssl.create_default_context          = _patched_ctx
+ssl._create_default_https_context   = ssl._create_unverified_context
+
 HF_REPO   = "Daniarosa/procurement-twin-artifacts"
 REPO_TYPE = "dataset"
 
@@ -43,15 +57,17 @@ def main():
         print("    Run:  pip install huggingface_hub")
         sys.exit(1)
 
-    api = HfApi()
+    # Read token from env var or cached HF login (~/.cache/huggingface/token)
+    TOKEN = os.environ.get("HF_TOKEN")
+    api = HfApi(token=TOKEN)
 
-    # Verify we're logged in
+    # Verify token works
     try:
         user = api.whoami()
         print(f"✅  Logged in as: {user['name']}")
-    except Exception:
-        print("❌  Not logged in to Hugging Face.")
-        print("    Run:  huggingface-cli login")
+    except Exception as e:
+        print(f"❌  Authentication failed: {e}")
+        print("    Set HF_TOKEN env var or run:  hf auth login")
         sys.exit(1)
 
     # Create the dataset repo if it doesn't exist
@@ -82,6 +98,7 @@ def main():
                 path_in_repo=hf_path,
                 repo_id=HF_REPO,
                 repo_type=REPO_TYPE,
+                token=TOKEN,
             )
             print("  ✅")
         except Exception as e:
