@@ -33,6 +33,18 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # ── Application code ───────────────────────────────────────────────
 COPY --chown=user . .
 
+# ── Runtime-writable directories + fix ownership ──────────────────
+# /home/user/app is created by WORKDIR as root; we need the non-root
+# user to be able to create data/features/ and models/ at startup.
+# HF_HOME redirects huggingface_hub's cache out of the app dir.
+RUN mkdir -p /home/user/app/models \
+             /home/user/app/data/features \
+             /home/user/app/data/processed \
+             /home/user/.cache/huggingface \
+    && chown -R user:user /home/user/app /home/user/.cache
+
+ENV HF_HOME=/home/user/.cache/huggingface
+
 # ── Switch to non-root user ────────────────────────────────────────
 USER user
 
