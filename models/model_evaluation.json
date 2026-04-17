@@ -16,12 +16,12 @@
     "base_rate": 0.229
   },
   "cross_border": {
-    "lr_auc": 0.738,
-    "rf_auc": 0.759,
-    "rf_ap": 0.281,
-    "n_train": 634793,
+    "rf_auc": 0.821,
+    "rf_ap": 0.207,
+    "n_train": 18515,
     "n_test": 297008,
-    "base_rate": 0.101
+    "base_rate": 0.025,
+    "note": "Retrained after fixing cross_border_win label bug (multi-lot ---separator)"
   },
   "price_ratio": {
     "baseline_mae": 0.286,
