@@ -1,0 +1,40 @@
+# ── Raw procurement data (7 GB — never commit) ───────────────────
+Procurement data/
+data/raw/
+
+# ── Intermediate & feature data (fetched from HF Hub at startup) ─
+data/processed/
+data/features/
+
+# ── Trained model binaries (fetched from HF Hub at startup) ──────
+models/*.pkl
+
+# ── Python bytecode & caches ─────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── macOS ─────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+
+# ── Jupyter ───────────────────────────────────────────────────────
+.ipynb_checkpoints/
+notebooks/
+
+# ── Environment / secrets ─────────────────────────────────────────
+.env
+*.env
+venv/
+.venv/
+env/
+
+# ── Logs ──────────────────────────────────────────────────────────
+*.log
+logs/

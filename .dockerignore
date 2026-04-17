@@ -1,0 +1,40 @@
+# Don't copy these into the Docker image
+
+# Raw data files (too large — ~4 GB)
+Procurement data/
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node (from docx generation)
+node_modules/
+package-lock.json
+package.json
+
+# Git
+.git/
+.gitignore
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.log

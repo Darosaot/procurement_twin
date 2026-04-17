@@ -1,0 +1,40 @@
+{
+  "competition": {
+    "baseline_mae": 2.197,
+    "baseline_r2": 0.039,
+    "boost_mae": 2.363,
+    "boost_r2": 0.179,
+    "n_train": 651409,
+    "n_test": 305897
+  },
+  "single_bid": {
+    "lr_auc": 0.679,
+    "rf_auc": 0.676,
+    "rf_ap": 0.439,
+    "n_train": 651932,
+    "n_test": 306053,
+    "base_rate": 0.229
+  },
+  "cross_border": {
+    "lr_auc": 0.738,
+    "rf_auc": 0.759,
+    "rf_ap": 0.281,
+    "n_train": 634793,
+    "n_test": 297008,
+    "base_rate": 0.101
+  },
+  "price_ratio": {
+    "baseline_mae": 0.286,
+    "baseline_r2": -0.067,
+    "iv_mae": 0.285,
+    "iv_r2": -0.063,
+    "n_train": 319314,
+    "n_test": 153669
+  },
+  "duration": {
+    "mae_days": 42.6,
+    "r2": 0.092,
+    "n_train": 614207,
+    "n_test": 298002
+  }
+}

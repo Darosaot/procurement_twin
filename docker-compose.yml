@@ -1,0 +1,85 @@
+# Procurement Digital Twin — Docker Compose
+# ─────────────────────────────────────────
+# Start:   docker compose up
+# Stop:    docker compose down
+# Rebuild: docker compose up --build
+#
+# Services
+#   twin     → Plotly Dash dashboard   http://localhost:8050
+#   api      → FastAPI REST API        http://localhost:8000
+#                Swagger UI            http://localhost:8000/docs
+#                ReDoc                 http://localhost:8000/redoc
+#   jupyter  → Jupyter Notebook        http://localhost:8888
+#                notebooks/analysis_demo.ipynb   ← start here
+
+services:
+  twin:
+    build: .
+    container_name: procurement-twin
+    ports:
+      - "8050:8050"         # Dashboard → http://localhost:8050
+    volumes:
+      - "./Procurement data:/app/Procurement data:ro"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8050')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 25s
+
+  api:
+    build: .
+    container_name: procurement-api
+    command: python run_api.py --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"         # REST API  → http://localhost:8000
+                            # Swagger   → http://localhost:8000/docs
+    volumes:
+      - "./Procurement data:/app/Procurement data:ro"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  jupyter:
+    build: .
+    container_name: procurement-jupyter
+    command: >
+      jupyter notebook
+        --ip=0.0.0.0
+        --port=8888
+        --no-browser
+        --allow-root
+        --ServerApp.token=''
+        --ServerApp.password=''
+        --ServerApp.root_dir=/app/notebooks
+    ports:
+      - "8888:8888"         # Jupyter → http://localhost:8888
+    volumes:
+      # notebooks/ is writable so users can save their own analyses
+      - "./notebooks:/app/notebooks"
+      - "./Procurement data:/app/Procurement data:ro"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Notebooks resolve the API via the Docker service name, not localhost
+      - TWIN_API_BASE=http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8888')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

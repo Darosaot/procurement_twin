@@ -1,0 +1,72 @@
+{
+  "cat_features": [
+    "ISO_COUNTRY_CODE",
+    "TOP_TYPE",
+    "TYPE_OF_CONTRACT",
+    "cpv_division",
+    "CRIT_CODE",
+    "value_bracket",
+    "country_cluster"
+  ],
+  "num_features": [
+    "log10_value",
+    "prep_time_days",
+    "contract_duration_months",
+    "flag_b_gpa",
+    "flag_b_eu_funds",
+    "flag_b_fra_agreement",
+    "flag_b_electronic_auction",
+    "flag_b_accelerated",
+    "price_weight_pct"
+  ],
+  "num_features_price": [
+    "log10_value",
+    "prep_time_days",
+    "contract_duration_months",
+    "flag_b_gpa",
+    "flag_b_eu_funds",
+    "flag_b_fra_agreement",
+    "flag_b_electronic_auction",
+    "flag_b_accelerated",
+    "price_weight_pct",
+    "competition_hat"
+  ],
+  "all_features": [
+    "ISO_COUNTRY_CODE",
+    "TOP_TYPE",
+    "TYPE_OF_CONTRACT",
+    "cpv_division",
+    "CRIT_CODE",
+    "value_bracket",
+    "country_cluster",
+    "log10_value",
+    "prep_time_days",
+    "contract_duration_months",
+    "flag_b_gpa",
+    "flag_b_eu_funds",
+    "flag_b_fra_agreement",
+    "flag_b_electronic_auction",
+    "flag_b_accelerated",
+    "price_weight_pct"
+  ],
+  "all_features_price": [
+    "ISO_COUNTRY_CODE",
+    "TOP_TYPE",
+    "TYPE_OF_CONTRACT",
+    "cpv_division",
+    "CRIT_CODE",
+    "value_bracket",
+    "country_cluster",
+    "log10_value",
+    "prep_time_days",
+    "contract_duration_months",
+    "flag_b_gpa",
+    "flag_b_eu_funds",
+    "flag_b_fra_agreement",
+    "flag_b_electronic_auction",
+    "flag_b_accelerated",
+    "price_weight_pct",
+    "competition_hat"
+  ],
+  "price_model_uses_competition_hat": true
+}

@@ -1,0 +1,26 @@
+# Procurement Digital Twin — Python dependencies
+# Versions pinned for reproducibility (prevents pickle deserialization
+# errors if a dependency is silently upgraded in a deployment environment).
+
+# ── Core data ──────────────────────────────────────────────────────
+polars==1.26.0
+pyarrow==19.0.0
+pandas==2.2.3
+numpy==1.26.4
+
+# ── Machine learning ───────────────────────────────────────────────
+scikit-learn==1.6.1
+xgboost==2.1.4
+statsmodels==0.14.4
+shap==0.47.2
+
+# ── Dashboard ──────────────────────────────────────────────────────
+plotly==5.24.1
+dash==2.18.2
+
+# ── HF Hub (artifact download at container startup) ────────────────
+huggingface_hub==0.27.1
+
+# ── Local / dev only (not needed in the Space) ────────────────────
+# fastapi, uvicorn, httpx  →  API server (run separately with run_api.py)
+# notebook, matplotlib, seaborn  →  exploratory notebooks only
