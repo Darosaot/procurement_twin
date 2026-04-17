@@ -997,10 +997,11 @@ def run_compare(n,
     rows = []
     for label, key, subkey, unit, fmt, low_better in metrics:
         d      = comp["deltas"][key]
-        mul    = 100 if unit == "%" else 1
-        a_v    = d["a"] * mul
-        b_v    = d["b"] * mul
-        delta  = d["delta"] * mul
+        # NOTE: do NOT multiply by 100 for "%" metrics — the ".1%" format
+        # specifier already multiplies by 100 and appends the % sign.
+        a_v    = d["a"]
+        b_v    = d["b"]
+        delta  = d["delta"]
         better = delta < 0 if low_better else delta > 0
         arrow  = "▲" if delta > 0 else "▼" if delta < 0 else "–"
         bg     = "#E2EFDA" if better else "#FCE4EC"
