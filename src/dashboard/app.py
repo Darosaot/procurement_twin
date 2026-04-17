@@ -870,8 +870,7 @@ def update_proc_desc_d(proc):
 
 
 @app.callback(
-    [Output("designer-results","children"),
-     Output("d-status","children")],
+    Output("designer-results","children"),
     Input("d-btn","n_clicks"),
     [State("d-country","value"), State("d-proc","value"),   State("d-ctype","value"),
      State("d-cpv","value"),     State("d-crit","value"),   State("d-val","value"),
@@ -987,7 +986,7 @@ def run_designer(n, country, proc, ctype, cpv, crit, val, prep, dur, pw, flags):
                   "justifyContent":"center","paddingLeft":"20px"}),
     ], style={"display":"flex","gap":"20px","alignItems":"center"})
 
-    return html.Div([kpi_row, dist_row, gauge_row]), ""  # "" clears the status message
+    return html.Div([kpi_row, dist_row, gauge_row])
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1053,8 +1052,7 @@ def upd_desc_cb(p): return PROC_DESCRIPTIONS.get(p,"")
 
 
 @app.callback(
-    [Output("compare-results","children"),
-     Output("compare-status","children")],
+    Output("compare-results","children"),
     Input("compare-btn","n_clicks"),
     [State("ca-country","value"), State("ca-proc","value"),  State("ca-ctype","value"),
      State("ca-cpv","value"),     State("ca-crit","value"),  State("ca-val","value"),
@@ -1140,7 +1138,7 @@ def run_compare(n,
             html.Div([dcc.Graph(figure=overlay("duration","Duration (days)"),
                                 config={"displayModeBar":False})], style={"flex":"1"}),
         ], style={"display":"flex","gap":"10px"}),
-    ]), ""  # "" clears the status message
+    ])
 
 
 # ══════════════════════════════════════════════════════════════════
