@@ -1,0 +1,22 @@
+name: Sync to HF Space
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history needed for a clean push
+
+      - name: Push to HF Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git remote add space https://Daniarosa:${HF_TOKEN}@huggingface.co/spaces/Daniarosa/procurement-twin
+          git push space main --force
