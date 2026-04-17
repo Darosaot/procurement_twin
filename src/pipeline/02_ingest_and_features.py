@@ -219,10 +219,23 @@ proc = proc.with_columns([
 ])
 
 # Cross-border
+# WIN_COUNTRY_CODE can be a '---'-separated list for multi-lot/consortium contracts
+# (e.g. "PL---PL---PL" for a domestic consortium, or "IT---RO" for a mixed one).
+# A simple string comparison ("PL---PL---PL" != "PL") would produce false positives.
+# Correct logic: cross_border_win = 1 if ANY valid 2-char winner code differs from buyer.
+def _is_cross_border(win_code: str, buyer: str) -> int | None:
+    if not win_code or not buyer:
+        return None
+    parts = [p.strip() for p in win_code.split("---") if len(p.strip()) == 2]
+    if not parts:
+        return None
+    return int(any(p != buyer for p in parts))
+
 proc = proc.with_columns(
-    pl.when(pl.col("WIN_COUNTRY_CODE").is_not_null() & pl.col("ISO_COUNTRY_CODE").is_not_null())
-      .then((pl.col("WIN_COUNTRY_CODE") != pl.col("ISO_COUNTRY_CODE")).cast(pl.Int8))
-      .otherwise(None).alias("cross_border_win")
+    pl.struct(["WIN_COUNTRY_CODE", "ISO_COUNTRY_CODE"]).map_elements(
+        lambda x: _is_cross_border(x["WIN_COUNTRY_CODE"], x["ISO_COUNTRY_CODE"]),
+        return_dtype=pl.Int8,
+    ).alias("cross_border_win")
 )
 
 # SME winner
