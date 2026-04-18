@@ -33,7 +33,30 @@ import plotly.express as px
 TIMEOUT_SECONDS = 30
 MAX_OUTPUT_CHARS = 20_000
 
-# Safe subset of builtins — nothing that touches the filesystem or executes code
+# Modules users are allowed to import inside the sandbox.
+# Everything pre-injected (pd, np, pl, go, px) is available without importing,
+# but users naturally write import statements — we support that for safe packages.
+_ALLOWED_IMPORT_TOPS = frozenset({
+    "math", "statistics", "itertools", "functools", "collections",
+    "datetime", "decimal", "fractions", "random", "re", "json",
+    "string", "textwrap", "pprint", "copy",
+    "pandas", "numpy", "polars", "plotly", "scipy",
+    "sklearn", "xgboost", "shap", "statsmodels",
+})
+
+def _make_safe_import():
+    _real_import = builtins.__import__
+    def _safe_import(name, *args, **kwargs):
+        top = name.split(".")[0]
+        if top not in _ALLOWED_IMPORT_TOPS:
+            raise ImportError(
+                f"Importing '{name}' is not allowed in the sandbox. "
+                f"Pre-loaded: pd, np, pl, go, px, twin, df, models, show."
+            )
+        return _real_import(name, *args, **kwargs)
+    return _safe_import
+
+# Safe subset of builtins — filesystem access and code execution are blocked
 _SAFE_BUILTIN_NAMES = {
     "abs", "all", "any", "bin", "bool", "bytes", "callable", "chr",
     "complex", "dict", "dir", "divmod", "enumerate", "filter", "float",
@@ -85,7 +108,7 @@ def run_code(code: str, twin, df: pd.DataFrame,
             raise TypeError(f"show() expects a plotly Figure, got {type(fig).__name__}")
 
     sandbox_globals = {
-        "__builtins__": _SAFE_BUILTINS,
+        "__builtins__": {**_SAFE_BUILTINS, "__import__": _make_safe_import()},
         # High-level simulation API
         "twin": twin,
         # Raw feature data
