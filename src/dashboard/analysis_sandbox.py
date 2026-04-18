@@ -17,6 +17,7 @@ Dangerous builtins (import, open, exec, eval, compile, etc.) are blocked.
 Execution is time-limited to TIMEOUT_SECONDS.
 """
 
+import ast
 import sys
 import io
 import time
@@ -78,6 +79,47 @@ _SAFE_BUILTINS = {
 }
 
 
+_BLOCKED_ATTRS = frozenset({
+    "__class__", "__subclasses__", "__mro__", "__bases__", "__base__",
+    "__dict__", "__globals__", "__builtins__", "__loader__", "__spec__",
+    "__code__", "__closure__", "__func__", "__self__", "__wrapped__",
+})
+
+_BLOCKED_IMPORTS = frozenset({
+    "os", "sys", "subprocess", "socket", "ctypes", "importlib",
+    "imp", "marshal", "shutil", "pathlib", "tempfile", "pty",
+    "signal", "mmap", "atexit", "distutils", "setuptools", "pip",
+})
+
+
+def _ast_check(code: str) -> None:
+    """Raise SyntaxError or ValueError if the AST contains dangerous patterns."""
+    try:
+        tree = ast.parse(code, filename="<analysis>")
+    except SyntaxError as e:
+        raise ValueError(f"Syntax error: {e}") from e
+
+    for node in ast.walk(tree):
+        # Block dunder attribute access (e.g. x.__class__.__subclasses__())
+        if isinstance(node, ast.Attribute) and node.attr in _BLOCKED_ATTRS:
+            raise ValueError(
+                f"Attribute '{node.attr}' is not allowed in the sandbox."
+            )
+        # Block top-level import of dangerous modules
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = (
+                [a.name for a in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module or ""]
+            )
+            for name in names:
+                top = (name or "").split(".")[0]
+                if top in _BLOCKED_IMPORTS:
+                    raise ValueError(
+                        f"Importing '{name}' is not allowed in the sandbox."
+                    )
+
+
 def run_code(code: str, twin, df: pd.DataFrame,
              models: dict, metadata: dict) -> dict:
     """
@@ -97,6 +139,16 @@ def run_code(code: str, twin, df: pd.DataFrame,
       error      — traceback string or None
       elapsed_ms — wall-clock execution time in milliseconds
     """
+    try:
+        _ast_check(code)
+    except ValueError as e:
+        return {
+            "stdout": "",
+            "figures": [],
+            "error": f"Security check failed: {e}",
+            "elapsed_ms": 0,
+        }
+
     figures: list = []
     stdout_buf = io.StringIO()
     error_container: list = [None]

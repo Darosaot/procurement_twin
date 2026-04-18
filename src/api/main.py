@@ -22,7 +22,8 @@ POST /policy             Aggregate counterfactual policy simulation
 POST /explain            Per-prediction SHAP feature contributions
 """
 
-import sys, os, json, time, logging
+import sys, os, json, time, logging, asyncio, functools
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import warnings
@@ -89,7 +90,6 @@ class _TimeoutMiddleware(BaseHTTPMiddleware):
     """Abort requests that exceed _REQUEST_TIMEOUT seconds."""
 
     async def dispatch(self, request: Request, call_next):
-        import asyncio
         try:
             return await asyncio.wait_for(call_next(request), timeout=_REQUEST_TIMEOUT)
         except asyncio.TimeoutError:
@@ -109,6 +109,13 @@ logger.info("Loading Procurement Twin models...")
 _twin = ProcurementTwin()
 _startup_time = datetime.utcnow().isoformat() + "Z"
 logger.info("Models ready.")
+
+# Dedicated executor for long-running blocking calls (/policy, /benchmark).
+# Size configurable via POLICY_WORKERS env var; default 2 keeps memory bounded.
+_blocking_executor = ThreadPoolExecutor(
+    max_workers=int(os.environ.get("POLICY_WORKERS", "2")),
+    thread_name_prefix="twin-blocking",
+)
 
 # ─────────────────────────────────────────────────────────────────
 # PYDANTIC SCHEMAS
@@ -606,23 +613,26 @@ def compare(req: CompareRequest, include_samples: bool = Query(False)):
     tags=["Empirical Data"],
     summary="Historical empirical benchmark",
 )
-def benchmark(req: BenchmarkRequest):
+async def benchmark(req: BenchmarkRequest):
     """
     Return empirical statistics from matching historical procedures in the feature store.
 
     Useful for comparing simulation output against the observed distribution.
     All filters are optional — omitting all filters returns EU-wide statistics.
 
-    Returns: n_records matched, and for each outcome: mean, median, P25, P75.
+    Returns: n_records matched, and for each outcome: mean, median, P25, P75, coverage.
     """
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        _twin.empirical_benchmark,
+        country=req.country,
+        procedure_type=req.procedure_type,
+        cpv_division=req.cpv_division,
+        year_from=req.year_from,
+        year_to=req.year_to,
+    )
     try:
-        result = _twin.empirical_benchmark(
-            country=req.country,
-            procedure_type=req.procedure_type,
-            cpv_division=req.cpv_division,
-            year_from=req.year_from,
-            year_to=req.year_to,
-        )
+        result = await loop.run_in_executor(_blocking_executor, fn)
     except (KeyError, ValueError, TypeError) as e:
         raise HTTPException(status_code=422, detail=str(e))
     except (AttributeError, IndexError, RuntimeError) as e:
@@ -645,7 +655,7 @@ def benchmark(req: BenchmarkRequest):
     tags=["Simulation"],
     summary="Aggregate policy simulation",
 )
-def policy_simulation(req: PolicyRequest):
+async def policy_simulation(req: PolicyRequest):
     """
     Simulate the aggregate effect of a policy intervention across matching historical procedures.
 
@@ -673,13 +683,16 @@ def policy_simulation(req: PolicyRequest):
 
     intervention = req.intervention.model_dump(exclude_none=True)
 
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        _twin.policy_simulation,
+        segment_filters=segment,
+        intervention=intervention,
+        n_records=req.n_records,
+        seed=req.seed,
+    )
     try:
-        result = _twin.policy_simulation(
-            segment_filters=segment,
-            intervention=intervention,
-            n_records=req.n_records,
-            seed=req.seed,
-        )
+        result = await loop.run_in_executor(_blocking_executor, fn)
     except (KeyError, ValueError, TypeError) as e:
         raise HTTPException(status_code=422, detail=str(e))
     except (AttributeError, IndexError, RuntimeError) as e:

@@ -23,6 +23,15 @@ CAN_FILE  = f"{DATA_DIR}/export_CAN_2023_2018.csv"
 CFC_FILE  = f"{DATA_DIR}/export_CFC_2018_2023.csv"
 LINK_FILE = f"{PROC_DIR}/cfc_can_linkage.parquet"
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+
 CPV_SECTORS = {
     "03":"Agriculture & Forestry","09":"Petroleum Products","14":"Mining & Quarrying",
     "15":"Food & Beverages","16":"Agricultural Machinery","18":"Clothing & Footwear",
@@ -60,14 +69,14 @@ PROC_LABELS = {
 CONTRACT_LABELS = {"S":"Services","U":"Supplies","W":"Works"}
 CRIT_LABELS     = {"L":"Lowest price","M":"MEAT (best value)"}
 
-print("="*60)
-print("PHASE 1b+1c: INGESTION + FEATURE ENGINEERING")
-print("="*60)
+logger.info("="*60)
+logger.info("PHASE 1b+1c: INGESTION + FEATURE ENGINEERING")
+logger.info("="*60)
 
 # ══════════════════════════════════════════════════════════════════
 # STEP 1 — CAN: stream → aggregate → save
 # ══════════════════════════════════════════════════════════════════
-print("\n[1/5] Streaming CAN → contract-level outcomes...")
+logger.info("\n[1/5] Streaming CAN → contract-level outcomes...")
 t0 = time.time()
 
 can = (
@@ -100,12 +109,12 @@ can = (
     .collect(engine="streaming")
 )
 can.write_parquet(f"{FEAT_DIR}/can_outcomes.parquet", compression="zstd")
-print(f"  {len(can):,} unique contracts  ({time.time()-t0:.1f}s)")
+logger.info(f"  {len(can):,} unique contracts  ({time.time()-t0:.1f}s)")
 
 # ══════════════════════════════════════════════════════════════════
 # STEP 2 — CFC: stream → deduplicate → save
 # ══════════════════════════════════════════════════════════════════
-print("\n[2/5] Streaming CFC → unique notices...")
+logger.info("\n[2/5] Streaming CFC → unique notices...")
 t0 = time.time()
 
 CFC_COLS = [
@@ -125,12 +134,12 @@ cfc = (
     .collect(engine="streaming")
 )
 cfc.write_parquet(f"{FEAT_DIR}/cfc_deduped.parquet", compression="zstd")
-print(f"  {len(cfc):,} unique notices  ({time.time()-t0:.1f}s)")
+logger.info(f"  {len(cfc):,} unique notices  ({time.time()-t0:.1f}s)")
 
 # ══════════════════════════════════════════════════════════════════
 # STEP 3 — Join CFC + linkage + CAN
 # ══════════════════════════════════════════════════════════════════
-print("\n[3/5] Joining CFC → linkage → CAN outcomes...")
+logger.info("\n[3/5] Joining CFC → linkage → CAN outcomes...")
 t0 = time.time()
 
 linkage = (
@@ -150,12 +159,12 @@ proc = cfc.join(linkage, on="ID_NOTICE_CN", how="left").join(can, on="ID_NOTICE_
 
 n_linked   = proc["ID_NOTICE_CAN"].is_not_null().sum()
 n_unlinked = proc["ID_NOTICE_CAN"].is_null().sum()
-print(f"  Total: {len(proc):,}  Linked: {n_linked:,} ({100*n_linked/len(proc):.1f}%)  Unlinked: {n_unlinked:,}  ({time.time()-t0:.1f}s)")
+logger.info(f"  Total: {len(proc):,}  Linked: {n_linked:,} ({100*n_linked/len(proc):.1f}%)  Unlinked: {n_unlinked:,}  ({time.time()-t0:.1f}s)")
 
 # ══════════════════════════════════════════════════════════════════
 # STEP 4 — Feature engineering
 # ══════════════════════════════════════════════════════════════════
-print("\n[4/5] Engineering features...")
+logger.info("\n[4/5] Engineering features...")
 t0 = time.time()
 
 # Dates
@@ -271,12 +280,12 @@ for col in ["B_GPA","B_EU_FUNDS","B_FRA_AGREEMENT","B_DYN_PURCH_SYST","B_ELECTRO
               .otherwise(None).cast(pl.Int8).alias(f"flag_{col.lower()}")
         )
 
-print(f"  Done ({time.time()-t0:.1f}s)  —  {proc.width} columns")
+logger.info(f"  Done ({time.time()-t0:.1f}s)  —  {proc.width} columns")
 
 # ══════════════════════════════════════════════════════════════════
 # STEP 5 — Select final columns and save
 # ══════════════════════════════════════════════════════════════════
-print("\n[5/5] Saving feature store...")
+logger.info("\n[5/5] Saving feature store...")
 
 KEEP = [
     "ID_NOTICE_CN","ID_NOTICE_CAN","YEAR",
@@ -308,13 +317,13 @@ unlinked.write_parquet(f"{FEAT_DIR}/cfc_unlinked.parquet",     compression="zstd
 
 pr_mb = os.path.getsize(f"{FEAT_DIR}/procedure_records.parquet")/1e6
 ul_mb = os.path.getsize(f"{FEAT_DIR}/cfc_unlinked.parquet")/1e6
-print(f"  procedure_records.parquet : {pr_mb:.1f} MB  ({len(linked):,} rows)")
-print(f"  cfc_unlinked.parquet      : {ul_mb:.1f} MB  ({len(unlinked):,} rows)")
+logger.info(f"  procedure_records.parquet : {pr_mb:.1f} MB  ({len(linked):,} rows)")
+logger.info(f"  cfc_unlinked.parquet      : {ul_mb:.1f} MB  ({len(unlinked):,} rows)")
 
 # ── Summary ───────────────────────────────────────────────────────
-print("\n"+"="*60)
-print("FEATURE STORE SUMMARY")
-print("="*60)
+logger.info("\n"+"="*60)
+logger.info("FEATURE STORE SUMMARY")
+logger.info("="*60)
 df = linked
 
 def stat(col, label, pct=False):
@@ -323,26 +332,26 @@ def stat(col, label, pct=False):
     if pct: print(f"  {label}: {s.mean()*100:.1f}%  (n={len(s):,})")
     else:   print(f"  {label}: median={s.median():.1f}  mean={s.mean():.1f}  n={len(s):,}")
 
-print(f"\nLinked records: {len(df):,}  |  Columns: {df.width}")
-print("\n── Timing ──")
+logger.info(f"\nLinked records: {len(df):,}  |  Columns: {df.width}")
+logger.info("\n── Timing ──")
 stat("prep_time_days","Prep time (days)")
 stat("proc_duration_days","Procedure duration (days)")
-print("\n── Competition ──")
+logger.info("\n── Competition ──")
 stat("n_offers","Offers received")
 stat("single_bid_flag","Single-bid rate", pct=True)
-print("\n── Cross-border & SME ──")
+logger.info("\n── Cross-border & SME ──")
 stat("cross_border_win","Cross-border win rate", pct=True)
 stat("sme_winner","SME winner rate", pct=True)
-print("\n── Price ──")
+logger.info("\n── Price ──")
 stat("price_ratio","Price ratio (award/estimate)")
-print("\n── Procedure types (top 8) ──")
+logger.info("\n── Procedure types (top 8) ──")
 for r in df.group_by("TOP_TYPE").agg(pl.len().alias("n")).sort("n",descending=True).head(8).iter_rows(named=True):
-    print(f"  {r['TOP_TYPE']:8s}  {r['n']:>8,}  ({100*r['n']/len(df):.1f}%)")
-print("\n── Top 10 countries ──")
+    logger.info(f"  {r['TOP_TYPE']:8s}  {r['n']:>8,}  ({100*r['n']/len(df):.1f}%)")
+logger.info("\n── Top 10 countries ──")
 for r in df.group_by("ISO_COUNTRY_CODE").agg(pl.len().alias("n")).sort("n",descending=True).head(10).iter_rows(named=True):
-    print(f"  {r['ISO_COUNTRY_CODE']:5s}  {r['n']:>8,}  ({100*r['n']/len(df):.1f}%)")
-print("\n── Top 8 CPV sectors ──")
+    logger.info(f"  {r['ISO_COUNTRY_CODE']:5s}  {r['n']:>8,}  ({100*r['n']/len(df):.1f}%)")
+logger.info("\n── Top 8 CPV sectors ──")
 for r in df.group_by("cpv_sector").agg(pl.len().alias("n")).sort("n",descending=True).head(8).iter_rows(named=True):
-    print(f"  {r['cpv_sector']:35s}  {r['n']:>7,}")
+    logger.info(f"  {r['cpv_sector']:35s}  {r['n']:>7,}")
 
-print("\n✅ Phase 1b+1c complete.\n")
+logger.info("\n✅ Phase 1b+1c complete.\n")
