@@ -2233,8 +2233,10 @@ def load_example(n_clicks_list):
     if not triggered:
         raise dash.exceptions.PreventUpdate
     idx = triggered["index"]
-    key = list(_ANALYSIS_EXAMPLES.keys())[idx]
-    return _ANALYSIS_EXAMPLES[key]
+    keys = list(_ANALYSIS_EXAMPLES.keys())
+    if idx < 0 or idx >= len(keys):
+        raise dash.exceptions.PreventUpdate
+    return _ANALYSIS_EXAMPLES[keys[idx]]
 
 
 @app.callback(
