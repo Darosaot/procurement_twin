@@ -60,8 +60,9 @@ class _SafeUnpickler(pickle.Unpickler):
 
 _THIS_DIR  = os.path.dirname(os.path.abspath(__file__))
 _PROJ_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
-MODEL_DIR  = os.path.join(_PROJ_ROOT, "models")
-FEAT_DIR   = os.path.join(_PROJ_ROOT, "data", "features")
+MODEL_DIR  = os.environ.get("MODEL_DIR",  os.path.join(_PROJ_ROOT, "models"))
+FEAT_DIR   = os.environ.get("FEAT_DIR",   os.path.join(_PROJ_ROOT, "data", "features"))
+DATA_DIR   = os.environ.get("DATA_DIR",   os.path.join(_PROJ_ROOT, "data"))
 
 # ── Country cluster mapping ───────────────────────────────────────
 COUNTRY_CLUSTERS = {
@@ -181,42 +182,54 @@ class ProcurementTwin:
 
     def _params_to_df(self, params: dict, include_comp_hat: float = None) -> pd.DataFrame:
         """Convert user-supplied params dict to a model-ready DataFrame."""
+        _defaults_applied: list[str] = []
+
         v = params.get("value_euro", None)
-        # Use median log10(value) as safe default when value is missing
+        if not (v and v > 0 and np.isfinite(v)):
+            _defaults_applied.append(f"value_euro={v!r} → log10_value={self._LOG10_VALUE_DEFAULT} (~€500k median)")
         log10_v = (np.log10(v) if (v and v > 0 and np.isfinite(v))
                    else self._LOG10_VALUE_DEFAULT)
 
-        def _num(val, default):
-            """Safe numeric coercion — returns default on None/NaN/inf."""
+        def _num(val, default, name=""):
             try:
                 f = float(val)
-                return default if (np.isnan(f) or np.isinf(f)) else f
+                if np.isnan(f) or np.isinf(f):
+                    _defaults_applied.append(f"{name}={val!r} → {default}")
+                    return default
+                return f
             except (TypeError, ValueError):
+                _defaults_applied.append(f"{name}={val!r} → {default}")
                 return default
 
-        def _str(val, default):
+        def _str(val, default, name=""):
             s = str(val) if val is not None else default
-            return default if s in ("nan", "None", "") else s
+            if s in ("nan", "None", ""):
+                _defaults_applied.append(f"{name}={val!r} → {default!r}")
+                return default
+            return s
 
         row = {
-            "ISO_COUNTRY_CODE":      _str(params.get("country"),         "DE"),
-            "TOP_TYPE":              _str(params.get("procedure_type"),   "OPE"),
-            "TYPE_OF_CONTRACT":      _str(params.get("contract_type"),    "S"),
-            "cpv_division":          _str(params.get("cpv_division"),     "72"),
-            "CRIT_CODE":             _str(params.get("criteria"),         "M"),
+            "ISO_COUNTRY_CODE":      _str(params.get("country"),         "DE",  "country"),
+            "TOP_TYPE":              _str(params.get("procedure_type"),   "OPE", "procedure_type"),
+            "TYPE_OF_CONTRACT":      _str(params.get("contract_type"),    "S",   "contract_type"),
+            "cpv_division":          _str(params.get("cpv_division"),     "72",  "cpv_division"),
+            "CRIT_CODE":             _str(params.get("criteria"),         "M",   "criteria"),
             "value_bracket":         value_bracket(v),
             "country_cluster":       COUNTRY_CLUSTERS.get(
                                          _str(params.get("country"), "DE"), "Other"),
             "log10_value":           log10_v,
-            "prep_time_days":        _num(params.get("prep_time_days"),   35.0),
-            "contract_duration_months": _num(params.get("duration_months"), 24.0),
+            "prep_time_days":        _num(params.get("prep_time_days"),   35.0, "prep_time_days"),
+            "contract_duration_months": _num(params.get("duration_months"), 24.0, "duration_months"),
             "flag_b_gpa":            int(_num(params.get("gpa", 0), 0)),
             "flag_b_eu_funds":       int(_num(params.get("eu_funds", 0), 0)),
             "flag_b_fra_agreement":  int(_num(params.get("fra_agreement", 0), 0)),
             "flag_b_electronic_auction": int(_num(params.get("electronic_auction", 0), 0)),
             "flag_b_accelerated":    int(_num(params.get("accelerated", 0), 0)),
-            "price_weight_pct":      _num(params.get("price_weight_pct"), 50.0),
+            "price_weight_pct":      _num(params.get("price_weight_pct"), 50.0, "price_weight_pct"),
         }
+
+        if _defaults_applied:
+            logger.warning("Simulation defaults applied: %s", "; ".join(_defaults_applied))
         if include_comp_hat is not None:
             row["competition_hat"] = include_comp_hat
 
@@ -345,25 +358,40 @@ class ProcurementTwin:
         if year_from:      df = df.filter(pl.col("YEAR") >= year_from)
         if year_to:        df = df.filter(pl.col("YEAR") <= year_to)
 
+        n_total = len(df)
+
         def stat_col(col):
             s = df[col].drop_nulls()
-            if len(s) == 0: return {"n": 0}
+            n_valid = len(s)
+            if n_valid == 0:
+                return {"n_total": n_total, "n_valid": 0, "coverage": 0.0}
             return {
-                "n":      len(s),
-                "mean":   round(float(s.mean()), 3),
-                "median": round(float(s.median()), 3),
-                "p25":    round(float(s.quantile(0.25)), 3),
-                "p75":    round(float(s.quantile(0.75)), 3),
+                "n_total":  n_total,
+                "n_valid":  n_valid,
+                "coverage": round(n_valid / n_total, 4) if n_total > 0 else 0.0,
+                "mean":     round(float(s.mean()), 3),
+                "median":   round(float(s.median()), 3),
+                "p25":      round(float(s.quantile(0.25)), 3),
+                "p75":      round(float(s.quantile(0.75)), 3),
             }
 
-        sb = df["single_bid_flag"].drop_nulls()
-        cb = df["cross_border_win"].drop_nulls()
+        def rate_col(col):
+            s = df[col].drop_nulls()
+            n_valid = len(s)
+            if n_valid == 0:
+                return {"n_total": n_total, "n_valid": 0, "coverage": 0.0, "rate": None}
+            return {
+                "n_total":  n_total,
+                "n_valid":  n_valid,
+                "coverage": round(n_valid / n_total, 4) if n_total > 0 else 0.0,
+                "rate":     round(float(s.mean()), 3),
+            }
 
         return {
-            "n_records":       len(df),
+            "n_records":       n_total,
             "competition":     stat_col("n_offers"),
-            "single_bid_rate": round(float(sb.mean()), 3) if len(sb) > 0 else None,
-            "cross_border":    round(float(cb.mean()), 3) if len(cb) > 0 else None,
+            "single_bid_rate": rate_col("single_bid_flag"),
+            "cross_border":    rate_col("cross_border_win"),
             "price_ratio":     stat_col("price_ratio"),
             "duration":        stat_col("proc_duration_days"),
             "prep_time":       stat_col("prep_time_days"),

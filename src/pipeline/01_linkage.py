@@ -55,12 +55,12 @@ def future_can_id_to_key(fcan_id) -> str | None:
         return None
 
 
-print("=" * 60)
-print("PHASE 1a: CFC-CAN LINKAGE RESOLUTION")
-print("=" * 60)
+logger.info("=" * 60)
+logger.info("PHASE 1a: CFC-CAN LINKAGE RESOLUTION")
+logger.info("=" * 60)
 
 # ── Step 1: Build CAN key table ─────────────────────────────────
-print("\n[1/4] Reading CAN TED notice URLs...")
+logger.info("\n[1/4] Reading CAN TED notice URLs...")
 t0 = time.time()
 
 can_urls = pl.read_csv(
@@ -69,10 +69,10 @@ can_urls = pl.read_csv(
     infer_schema_length=5000,
     ignore_errors=True
 )
-print(f"  CAN rows loaded: {len(can_urls):,}  ({time.time()-t0:.1f}s)")
+logger.info(f"  CAN rows loaded: {len(can_urls):,}  ({time.time()-t0:.1f}s)")
 
 # Parse TED notice key from URL
-print("  Parsing TED notice keys from URLs...")
+logger.info("  Parsing TED notice keys from URLs...")
 ted_keys = []
 for url in can_urls["TED_NOTICE_URL"].to_list():
     ted_keys.append(parse_ted_url(str(url) if url else ""))
@@ -83,29 +83,38 @@ can_urls = can_urls.with_columns(
 
 # Check parsing success
 parsed = sum(1 for k in ted_keys if k is not None)
-print(f"  Successfully parsed: {parsed:,} / {len(ted_keys):,} ({100*parsed/len(ted_keys):.1f}%)")
+logger.info(f"  Successfully parsed: {parsed:,} / {len(ted_keys):,} ({100*parsed/len(ted_keys):.1f}%)")
 
 # Sample
-print("\n  Sample TED keys:")
+logger.info("\n  Sample TED keys:")
 sample = can_urls.filter(pl.col("TED_KEY").is_not_null()).head(5)
 for row in sample.iter_rows(named=True):
-    print(f"    ID={row['ID_NOTICE_CAN']}  URL_snippet=...NOTICE:{row['TED_NOTICE_URL'].split('NOTICE:')[1][:15]}  KEY={row['TED_KEY']}")
+    logger.info(f"    ID={row['ID_NOTICE_CAN']}  URL_snippet=...NOTICE:{row['TED_NOTICE_URL'].split('NOTICE:')[1][:15]}  KEY={row['TED_KEY']}")
 
 
 # ── Step 2: Read CFC FUTURE_CAN_ID ──────────────────────────────
-print("\n[2/4] Reading CFC FUTURE_CAN_ID values...")
+logger.info("\n[2/4] Reading CFC FUTURE_CAN_ID values...")
 t0 = time.time()
 
 cfc_ids = pl.read_csv(
     CFC_FILE,
+
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
     columns=["ID_NOTICE_CN", "FUTURE_CAN_ID", "FUTURE_CAN_ID_ESTIMATED", "YEAR"],
     infer_schema_length=5000,
     ignore_errors=True
 )
-print(f"  CFC rows loaded: {len(cfc_ids):,}  ({time.time()-t0:.1f}s)")
+logger.info(f"  CFC rows loaded: {len(cfc_ids):,}  ({time.time()-t0:.1f}s)")
 
 # Convert FUTURE_CAN_ID to composite key
-print("  Converting FUTURE_CAN_ID to composite keys...")
+logger.info("  Converting FUTURE_CAN_ID to composite keys...")
 fcan_keys = []
 for fid in cfc_ids["FUTURE_CAN_ID"].to_list():
     fcan_keys.append(future_can_id_to_key(fid))
@@ -115,28 +124,28 @@ cfc_ids = cfc_ids.with_columns(
 )
 
 non_null_fcan = sum(1 for k in fcan_keys if k is not None)
-print(f"  CFC records with FUTURE_CAN_ID: {non_null_fcan:,} / {len(fcan_keys):,} ({100*non_null_fcan/len(fcan_keys):.1f}%)")
+logger.info(f"  CFC records with FUTURE_CAN_ID: {non_null_fcan:,} / {len(fcan_keys):,} ({100*non_null_fcan/len(fcan_keys):.1f}%)")
 
 # Sample
-print("\n  Sample FUTURE_CAN_ID → KEY:")
+logger.info("\n  Sample FUTURE_CAN_ID → KEY:")
 sample = cfc_ids.filter(pl.col("FUTURE_KEY").is_not_null()).head(5)
 for row in sample.iter_rows(named=True):
-    print(f"    CFC_ID={row['ID_NOTICE_CN']}  FUTURE_CAN_ID={row['FUTURE_CAN_ID']}  KEY={row['FUTURE_KEY']}")
+    logger.info(f"    CFC_ID={row['ID_NOTICE_CN']}  FUTURE_CAN_ID={row['FUTURE_CAN_ID']}  KEY={row['FUTURE_KEY']}")
 
 
 # ── Step 3: Join to build linkage table ─────────────────────────
-print("\n[3/4] Joining CFC and CAN via TED key...")
+logger.info("\n[3/4] Joining CFC and CAN via TED key...")
 
 # CAN lookup: TED_KEY → ID_NOTICE_CAN
 can_lookup = can_urls.filter(pl.col("TED_KEY").is_not_null()).select(
     ["TED_KEY", "ID_NOTICE_CAN"]
 ).unique(subset=["TED_KEY"])  # deduplicate (CAN can have multiple lots)
 
-print(f"  Unique TED keys in CAN: {len(can_lookup):,}")
+logger.info(f"  Unique TED keys in CAN: {len(can_lookup):,}")
 
 # CFC with non-null future key
 cfc_with_key = cfc_ids.filter(pl.col("FUTURE_KEY").is_not_null())
-print(f"  CFC records with linkage key: {len(cfc_with_key):,}")
+logger.info(f"  CFC records with linkage key: {len(cfc_with_key):,}")
 
 # Join
 linkage = cfc_with_key.join(
@@ -149,23 +158,23 @@ linkage = cfc_with_key.join(
 matched = linkage.filter(pl.col("ID_NOTICE_CAN").is_not_null())
 unmatched = linkage.filter(pl.col("ID_NOTICE_CAN").is_null())
 
-print(f"\n  ✓ Successfully linked:   {len(matched):,} ({100*len(matched)/len(cfc_with_key):.1f}%)")
-print(f"  ✗ Unmatched CFC records: {len(unmatched):,} ({100*len(unmatched)/len(cfc_with_key):.1f}%)")
+logger.info(f"\n  ✓ Successfully linked:   {len(matched):,} ({100*len(matched)/len(cfc_with_key):.1f}%)")
+logger.info(f"  ✗ Unmatched CFC records: {len(unmatched):,} ({100*len(unmatched)/len(cfc_with_key):.1f}%)")
 
 # ── Step 4: Save linkage table ───────────────────────────────────
-print("\n[4/4] Saving linkage table...")
+logger.info("\n[4/4] Saving linkage table...")
 linkage_table = linkage.select([
     "ID_NOTICE_CN", "FUTURE_CAN_ID", "FUTURE_KEY", "ID_NOTICE_CAN"
 ])
 linkage_table.write_parquet(f"{OUT_DIR}/cfc_can_linkage.parquet")
-print(f"  Saved → {OUT_DIR}/cfc_can_linkage.parquet")
+logger.info(f"  Saved → {OUT_DIR}/cfc_can_linkage.parquet")
 
 # Also save can key table for reuse
 can_urls.select(["ID_NOTICE_CAN", "TED_KEY"]).write_parquet(f"{OUT_DIR}/can_ted_keys.parquet")
-print(f"  Saved → {OUT_DIR}/can_ted_keys.parquet")
+logger.info(f"  Saved → {OUT_DIR}/can_ted_keys.parquet")
 
-print("\n✅ Phase 1a complete.\n")
-print(f"  Total CFC records:      {len(cfc_ids):,}")
-print(f"  CFC with FUTURE_CAN_ID: {non_null_fcan:,}")
-print(f"  Linked to CAN:          {len(matched):,}")
-print(f"  Linkage rate:           {100*len(matched)/len(cfc_ids):.1f}% of all CFC records")
+logger.info("\n✅ Phase 1a complete.\n")
+logger.info(f"  Total CFC records:      {len(cfc_ids):,}")
+logger.info(f"  CFC with FUTURE_CAN_ID: {non_null_fcan:,}")
+logger.info(f"  Linked to CAN:          {len(matched):,}")
+logger.info(f"  Linkage rate:           {100*len(matched)/len(cfc_ids):.1f}% of all CFC records")

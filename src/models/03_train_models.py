@@ -39,29 +39,38 @@ try:
     HAS_XGB = True
 except ImportError:
     HAS_XGB = False
-    print("  XGBoost not available, using GradientBoosting instead")
+    logger.info("  XGBoost not available, using GradientBoosting instead")
 
 try:
     import shap
     HAS_SHAP = True
 except ImportError:
     HAS_SHAP = False
-    print("  SHAP not available, skipping feature importance export")
+    logger.info("  SHAP not available, skipping feature importance export")
 
 FEAT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "features")
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "models")
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-print("="*60)
-print("PHASE 2: MODEL TRAINING  (v2)")
-print("="*60)
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+
+logger.info("="*60)
+logger.info("PHASE 2: MODEL TRAINING  (v2)")
+logger.info("="*60)
 
 # ══════════════════════════════════════════════════════════════════
 # Load feature store
 # ══════════════════════════════════════════════════════════════════
-print("\n[0] Loading feature store...")
+logger.info("\n[0] Loading feature store...")
 df = pl.read_parquet(f"{FEAT_DIR}/procedure_records.parquet").to_pandas()
-print(f"  {len(df):,} rows  ×  {df.shape[1]} cols")
+logger.info(f"  {len(df):,} rows  ×  {df.shape[1]} cols")
 
 # ── Feature specification ─────────────────────────────────────────
 CAT_FEATURES = ["ISO_COUNTRY_CODE","TOP_TYPE","TYPE_OF_CONTRACT",
@@ -108,20 +117,20 @@ def save_model(model, name):
     path = f"{MODEL_DIR}/{name}.pkl"
     with open(path, "wb") as f:
         pickle.dump(model, f)
-    print(f"  Saved → {name}.pkl")
+    logger.info(f"  Saved → {name}.pkl")
 
 
 # ══════════════════════════════════════════════════════════════════
 # MODEL 1: Competition (n_offers)
 # ══════════════════════════════════════════════════════════════════
-print("\n[1/5] Competition model (n_offers)...")
+logger.info("\n[1/5] Competition model (n_offers)...")
 t0 = time.time()
 
 outcome = "n_offers"
 mask = df[outcome].notna() & df[outcome].between(0, 100)
 train = df[train_mask & mask]
 test  = df[test_mask  & mask]
-print(f"  Train: {len(train):,}  Test: {len(test):,}")
+logger.info(f"  Train: {len(train):,}  Test: {len(test):,}")
 
 X_train = prep_X(train); y_train = train[outcome].astype(float)
 X_test  = prep_X(test);  y_test  = test[outcome].astype(float)
@@ -155,8 +164,8 @@ y_pred_boost = boost_comp.predict(X_test).clip(0)
 mae_boost = mean_absolute_error(y_test, y_pred_boost)
 r2_boost  = r2_score(y_test, y_pred_boost)
 
-print(f"  Baseline   MAE={mae_base:.2f}  R²={r2_base:.3f}")
-print(f"  Boost      MAE={mae_boost:.2f}  R²={r2_boost:.3f}")
+logger.info(f"  Baseline   MAE={mae_base:.2f}  R²={r2_base:.3f}")
+logger.info(f"  Boost      MAE={mae_boost:.2f}  R²={r2_boost:.3f}")
 
 deploy_comp = boost_comp if r2_boost > r2_base else baseline_comp
 
@@ -188,24 +197,24 @@ if HAS_XGB and r2_boost > r2_base:
             [n.replace("num__","").replace("cat__","") for n in feat_names],
             [round(float(v), 6) for v in fi]
         ))
-        print(f"  Feature importances computed ({len(fi)} features)")
+        logger.info(f"  Feature importances computed ({len(fi)} features)")
     except Exception as e:
-        print(f"  Feature importance skipped: {e}")
-print(f"  Time: {time.time()-t0:.1f}s")
+        logger.info(f"  Feature importance skipped: {e}")
+logger.info(f"  Time: {time.time()-t0:.1f}s")
 
 
 # ══════════════════════════════════════════════════════════════════
 # MODEL 2: Single-bid risk
 # ══════════════════════════════════════════════════════════════════
-print("\n[2/5] Single-bid risk model...")
+logger.info("\n[2/5] Single-bid risk model...")
 t0 = time.time()
 
 outcome = "single_bid_flag"
 mask = df[outcome].notna()
 train = df[train_mask & mask]
 test  = df[test_mask  & mask]
-print(f"  Train: {len(train):,}  Test: {len(test):,}")
-print(f"  Positive rate: {train[outcome].mean()*100:.1f}%")
+logger.info(f"  Train: {len(train):,}  Test: {len(test):,}")
+logger.info(f"  Positive rate: {train[outcome].mean()*100:.1f}%")
 
 X_train = prep_X(train); y_train = train[outcome].astype(int)
 X_test  = prep_X(test);  y_test  = test[outcome].astype(int)
@@ -228,8 +237,8 @@ y_prob_rf = rf_sb.predict_proba(X_test)[:,1]
 auc_rf = roc_auc_score(y_test, y_prob_rf)
 ap_rf  = average_precision_score(y_test, y_prob_rf)
 
-print(f"  LogReg       AUC={auc_lr:.3f}")
-print(f"  RandomForest AUC={auc_rf:.3f}  AP={ap_rf:.3f}")
+logger.info(f"  LogReg       AUC={auc_lr:.3f}")
+logger.info(f"  RandomForest AUC={auc_rf:.3f}  AP={ap_rf:.3f}")
 
 deploy_sb = rf_sb if auc_rf > auc_lr else lr_sb
 save_model({"model": deploy_sb}, "single_bid_model")
@@ -256,24 +265,24 @@ try:
             [n.replace("num__","").replace("cat__","") for n in feat_names],
             [round(float(v), 6) for v in fi]
         ))
-        print(f"  Feature importances computed ({len(fi)} features)")
+        logger.info(f"  Feature importances computed ({len(fi)} features)")
 except Exception as e:
-    print(f"  Feature importance skipped: {e}")
-print(f"  Time: {time.time()-t0:.1f}s")
+    logger.info(f"  Feature importance skipped: {e}")
+logger.info(f"  Time: {time.time()-t0:.1f}s")
 
 
 # ══════════════════════════════════════════════════════════════════
 # MODEL 3: Cross-border win
 # ══════════════════════════════════════════════════════════════════
-print("\n[3/5] Cross-border win model...")
+logger.info("\n[3/5] Cross-border win model...")
 t0 = time.time()
 
 outcome = "cross_border_win"
 mask = df[outcome].notna()
 train = df[train_mask & mask]
 test  = df[test_mask  & mask]
-print(f"  Train: {len(train):,}  Test: {len(test):,}")
-print(f"  Positive rate: {train[outcome].mean()*100:.1f}%")
+logger.info(f"  Train: {len(train):,}  Test: {len(test):,}")
+logger.info(f"  Positive rate: {train[outcome].mean()*100:.1f}%")
 
 X_train = prep_X(train); y_train = train[outcome].astype(int)
 X_test  = prep_X(test);  y_test  = test[outcome].astype(int)
@@ -295,8 +304,8 @@ y_prob_rf_cb = rf_cb.predict_proba(X_test)[:,1]
 auc_rf_cb = roc_auc_score(y_test, y_prob_rf_cb)
 ap_rf_cb  = average_precision_score(y_test, y_prob_rf_cb)
 
-print(f"  LogReg       AUC={auc_lr_cb:.3f}")
-print(f"  RandomForest AUC={auc_rf_cb:.3f}  AP={ap_rf_cb:.3f}")
+logger.info(f"  LogReg       AUC={auc_lr_cb:.3f}")
+logger.info(f"  RandomForest AUC={auc_rf_cb:.3f}  AP={ap_rf_cb:.3f}")
 
 deploy_cb = rf_cb if auc_rf_cb > auc_lr_cb else lr_cb
 save_model({"model": deploy_cb}, "crossborder_model")
@@ -306,7 +315,7 @@ evaluation["cross_border"] = {
     "n_train": len(train), "n_test": len(test),
     "base_rate": round(float(train[outcome].mean()), 3)
 }
-print(f"  Time: {time.time()-t0:.1f}s")
+logger.info(f"  Time: {time.time()-t0:.1f}s")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -320,14 +329,14 @@ print(f"  Time: {time.time()-t0:.1f}s")
 # from procedure design → competition → price, avoiding the
 # endogeneity bias from unobserved market conditions.
 # ══════════════════════════════════════════════════════════════════
-print("\n[4/5] Price ratio model (2-stage IV)...")
+logger.info("\n[4/5] Price ratio model (2-stage IV)...")
 t0 = time.time()
 
 outcome = "price_ratio"
 mask = df[outcome].notna() & df[outcome].between(0.1, 3.0)
 train = df[train_mask & mask].copy()
 test  = df[test_mask  & mask].copy()
-print(f"  Train: {len(train):,}  Test: {len(test):,}")
+logger.info(f"  Train: {len(train):,}  Test: {len(test):,}")
 
 # Stage 1: get competition_hat predictions from the competition model
 train["competition_hat"] = deploy_comp.predict(prep_X(train)).clip(0)
@@ -357,8 +366,8 @@ y_pred_base = np.exp(ridge_base.predict(prep_X(test)))
 mae_base_pr = mean_absolute_error(y_test_p, y_pred_base)
 r2_base_pr  = r2_score(y_test_p, y_pred_base)
 
-print(f"  Baseline (no comp) MAE={mae_base_pr:.3f}  R²={r2_base_pr:.3f}")
-print(f"  IV (with comp_hat) MAE={mae_iv:.3f}  R²={r2_iv:.3f}")
+logger.info(f"  Baseline (no comp) MAE={mae_base_pr:.3f}  R²={r2_base_pr:.3f}")
+logger.info(f"  IV (with comp_hat) MAE={mae_iv:.3f}  R²={r2_iv:.3f}")
 
 # Distribution parameters (fit on training data)
 log_ratio = np.log(train[outcome].astype(float))
@@ -379,20 +388,20 @@ evaluation["price_ratio"] = {
     "iv_mae":  round(mae_iv, 3),  "iv_r2":  round(r2_iv, 3),
     "n_train": len(train), "n_test": len(test)
 }
-print(f"  Time: {time.time()-t0:.1f}s")
+logger.info(f"  Time: {time.time()-t0:.1f}s")
 
 
 # ══════════════════════════════════════════════════════════════════
 # MODEL 5: Procedure duration
 # ══════════════════════════════════════════════════════════════════
-print("\n[5/5] Procedure duration model...")
+logger.info("\n[5/5] Procedure duration model...")
 t0 = time.time()
 
 outcome = "proc_duration_days"
 mask = df[outcome].notna() & df[outcome].between(0, 730)
 train = df[train_mask & mask]
 test  = df[test_mask  & mask]
-print(f"  Train: {len(train):,}  Test: {len(test):,}")
+logger.info(f"  Train: {len(train):,}  Test: {len(test):,}")
 
 X_train = prep_X(train); y_train = np.log1p(train[outcome].astype(float))
 X_test  = prep_X(test);  y_test  = test[outcome].astype(float)
@@ -416,14 +425,14 @@ dur_meta = {
     "p75": float(np.expm1(np.percentile(log_dur, 75))),
     "p90": float(np.expm1(np.percentile(log_dur, 90))),
 }
-print(f"  Ridge      MAE={mae_dur:.1f}d  R²={r2_dur:.3f}")
+logger.info(f"  Ridge      MAE={mae_dur:.1f}d  R²={r2_dur:.3f}")
 
 save_model({"model": ridge_dur, "meta": dur_meta}, "duration_model")
 evaluation["duration"] = {
     "mae_days": round(mae_dur, 1), "r2": round(r2_dur, 3),
     "n_train": len(train), "n_test": len(test)
 }
-print(f"  Time: {time.time()-t0:.1f}s")
+logger.info(f"  Time: {time.time()-t0:.1f}s")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -433,7 +442,7 @@ print(f"  Time: {time.time()-t0:.1f}s")
 # segments (e.g., medical supplies consistently price higher than
 # the global model predicts). Applied post-hoc in simulation.
 # ══════════════════════════════════════════════════════════════════
-print("\n[+] Computing calibration offsets...")
+logger.info("\n[+] Computing calibration offsets...")
 
 cal_train_mask = df["price_ratio"].notna() & df["price_ratio"].between(0.1, 3.0) & train_mask
 cal_df = df[cal_train_mask].copy()
@@ -479,7 +488,7 @@ calibration = {
 
 with open(f"{MODEL_DIR}/calibration_offsets.json", "w") as f:
     json.dump(calibration, f, indent=2)
-print(f"  Saved calibration offsets: {len(cpv_offsets)} CPV + {len(cluster_offsets)} cluster buckets")
+logger.info(f"  Saved calibration offsets: {len(cpv_offsets)} CPV + {len(cluster_offsets)} cluster buckets")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -491,7 +500,7 @@ with open(f"{MODEL_DIR}/model_evaluation.json", "w") as f:
 if shap_importance:
     with open(f"{MODEL_DIR}/shap_importances.json", "w") as f:
         json.dump(shap_importance, f, indent=2)
-    print("  Saved SHAP importances")
+    logger.info("  Saved SHAP importances")
 
 feature_spec = {
     "cat_features":       CAT_FEATURES,
@@ -504,13 +513,13 @@ feature_spec = {
 with open(f"{MODEL_DIR}/feature_spec.json", "w") as f:
     json.dump(feature_spec, f, indent=2)
 
-print("\n" + "="*60)
-print("MODEL EVALUATION SUMMARY")
-print("="*60)
-print(f"\n  Competition model:    MAE={evaluation['competition']['boost_mae']:.2f} offers  R²={evaluation['competition']['boost_r2']:.3f}")
-print(f"  Single-bid model:     AUC={evaluation['single_bid']['rf_auc']:.3f}")
-print(f"  Cross-border model:   AUC={evaluation['cross_border']['rf_auc']:.3f}")
-print(f"  Price ratio (IV):     MAE={evaluation['price_ratio']['iv_mae']:.3f}  R²={evaluation['price_ratio']['iv_r2']:.3f}  (baseline R²={evaluation['price_ratio']['baseline_r2']:.3f})")
-print(f"  Duration model:       MAE={evaluation['duration']['mae_days']:.0f}d  R²={evaluation['duration']['r2']:.3f}")
+logger.info("\n" + "="*60)
+logger.info("MODEL EVALUATION SUMMARY")
+logger.info("="*60)
+logger.info(f"\n  Competition model:    MAE={evaluation['competition']['boost_mae']:.2f} offers  R²={evaluation['competition']['boost_r2']:.3f}")
+logger.info(f"  Single-bid model:     AUC={evaluation['single_bid']['rf_auc']:.3f}")
+logger.info(f"  Cross-border model:   AUC={evaluation['cross_border']['rf_auc']:.3f}")
+logger.info(f"  Price ratio (IV):     MAE={evaluation['price_ratio']['iv_mae']:.3f}  R²={evaluation['price_ratio']['iv_r2']:.3f}  (baseline R²={evaluation['price_ratio']['baseline_r2']:.3f})")
+logger.info(f"  Duration model:       MAE={evaluation['duration']['mae_days']:.0f}d  R²={evaluation['duration']['r2']:.3f}")
 
-print("\n✅ Phase 2 complete — all models saved.\n")
+logger.info("\n✅ Phase 2 complete — all models saved.\n")

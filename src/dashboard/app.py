@@ -10,7 +10,7 @@ Six tabs:
   6. 📖 Methodology          — how the models work, calibration, Monte Carlo, limitations
 """
 
-import sys, os, json, logging
+import sys, os, json, logging, threading
 
 _THIS_DIR     = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
@@ -22,8 +22,8 @@ for _p in [_PROJECT_ROOT, _SRC_DIR]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-FEAT_DIR  = os.path.join(_PROJECT_ROOT, "data", "features")
-MODEL_DIR = os.path.join(_PROJECT_ROOT, "models")
+FEAT_DIR  = os.environ.get("FEAT_DIR",  os.path.join(_PROJECT_ROOT, "data", "features"))
+MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(_PROJECT_ROOT, "models"))
 
 import dash
 from dash import dcc, html, Input, Output, State, ctx
@@ -41,14 +41,27 @@ from dashboard.analysis_sandbox import run_code as _sandbox_run
 # ── Initialise twin ───────────────────────────────────────────────
 twin = ProcurementTwin()
 
-# ── Pre-load feature store for the Analysis sandbox ───────────────
-_FEAT_PATH = os.path.join(FEAT_DIR, "procedure_records.parquet")
-try:
-    _SANDBOX_DF = pl.read_parquet(_FEAT_PATH).to_pandas()
-    logger.info("Feature store loaded for sandbox: %d rows", len(_SANDBOX_DF))
-except Exception as _e:
-    logger.warning("Could not load feature store for sandbox: %s", _e)
-    _SANDBOX_DF = pd.DataFrame()
+# ── Lazy-load feature store for the Analysis sandbox ─────────────
+# The 1.1M-row parquet is only needed when the user opens the Analysis tab.
+# Load on first access so startup memory stays small.
+_FEAT_PATH        = os.path.join(FEAT_DIR, "procedure_records.parquet")
+_SANDBOX_DF       = None
+_SANDBOX_DF_LOCK  = threading.Lock()
+
+
+def _get_sandbox_df() -> pd.DataFrame:
+    global _SANDBOX_DF
+    if _SANDBOX_DF is not None:
+        return _SANDBOX_DF
+    with _SANDBOX_DF_LOCK:
+        if _SANDBOX_DF is None:
+            try:
+                _SANDBOX_DF = pl.read_parquet(_FEAT_PATH).to_pandas()
+                logger.info("Feature store lazy-loaded for sandbox: %d rows", len(_SANDBOX_DF))
+            except Exception as _e:
+                logger.warning("Could not load feature store for sandbox: %s", _e)
+                _SANDBOX_DF = pd.DataFrame()
+    return _SANDBOX_DF
 
 # ── Build sandbox model + metadata dicts (reuse already-loaded twin state) ──
 _SANDBOX_MODELS = {
@@ -2249,7 +2262,7 @@ def load_example(n_clicks_list):
 def execute_code(n_clicks, code):
     if not code or not code.strip():
         return dash.no_update, "Nothing to run."
-    result = _sandbox_run(code, twin, _SANDBOX_DF, _SANDBOX_MODELS, _SANDBOX_META)
+    result = _sandbox_run(code, twin, _get_sandbox_df(), _SANDBOX_MODELS, _SANDBOX_META)
     status = f"Ran in {result['elapsed_ms']} ms"
     if result["error"]:
         status += " · error"
