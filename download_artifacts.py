@@ -11,8 +11,11 @@ set the HF_TOKEN environment variable in the HF Space settings.
 
 import os
 import sys
+import logging
 
-HF_REPO      = "Daniarosa/procurement-twin-artifacts"
+logger = logging.getLogger(__name__)
+
+HF_REPO      = os.environ.get("HF_REPO", "Daniarosa/procurement-twin-artifacts")
 REPO_TYPE    = "dataset"
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -71,6 +74,7 @@ def download_all(verbose: bool = True) -> bool:
             print(f"  ✅  ({size_mb:.1f} MB)")
         except Exception as e:
             print(f"\n   ❌  Failed: {e}")
+            logger.error("Failed to download %s: %s", hf_path, e)
             all_ok = False
 
     return all_ok

@@ -15,21 +15,27 @@ Then:
 import os
 import sys
 
-# ── SSL fix for Homebrew Python on macOS ──────────────────────────
-# Homebrew Python 3.14 doesn't trust macOS's system cert store.
-# This patches ssl.create_default_context (used by httpx/httpcore)
-# to skip certificate verification. Safe for this one-time upload.
+# ── Optional SSL workaround — disabled by default ─────────────────
+# Activate only when certs cannot be fixed: PROCUREMENT_SKIP_SSL_VERIFY=1
+# Preferred fix: pip install certifi && python -m certifi
 import ssl
-_orig_ctx = ssl.create_default_context
-def _patched_ctx(*args, **kwargs):
-    ctx = _orig_ctx(*args, **kwargs)
-    ctx.check_hostname = False
-    ctx.verify_mode    = ssl.CERT_NONE
-    return ctx
-ssl.create_default_context          = _patched_ctx
-ssl._create_default_https_context   = ssl._create_unverified_context
+if os.environ.get("PROCUREMENT_SKIP_SSL_VERIFY") == "1":
+    import warnings as _w
+    _w.warn(
+        "SSL certificate verification DISABLED (PROCUREMENT_SKIP_SSL_VERIFY=1). "
+        "Only use this on a trusted network.",
+        stacklevel=1,
+    )
+    _orig_ctx = ssl.create_default_context
+    def _patched_ctx(*args, **kwargs):
+        ctx = _orig_ctx(*args, **kwargs)
+        ctx.check_hostname = False
+        ctx.verify_mode    = ssl.CERT_NONE
+        return ctx
+    ssl.create_default_context        = _patched_ctx
+    ssl._create_default_https_context = ssl._create_unverified_context
 
-HF_REPO   = "Daniarosa/procurement-twin-artifacts"
+HF_REPO   = os.environ.get("HF_REPO", "Daniarosa/procurement-twin-artifacts")
 REPO_TYPE = "dataset"
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))

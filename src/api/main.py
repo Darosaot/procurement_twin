@@ -22,11 +22,17 @@ POST /policy             Aggregate counterfactual policy simulation
 POST /explain            Per-prediction SHAP feature contributions
 """
 
-import sys, os, json, time
+import sys, os, json, time, logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import warnings
 warnings.filterwarnings("ignore")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 # ── Path resolution (works from any working directory) ────────────
 _THIS_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -69,10 +75,10 @@ app.add_middleware(
 )
 
 # ── Load twin once at startup ─────────────────────────────────────
-print("Loading Procurement Twin models...")
+logger.info("Loading Procurement Twin models...")
 _twin = ProcurementTwin()
 _startup_time = datetime.utcnow().isoformat() + "Z"
-print("  Models ready.")
+logger.info("Models ready.")
 
 # ─────────────────────────────────────────────────────────────────
 # PYDANTIC SCHEMAS
@@ -462,8 +468,11 @@ def simulate(params: ProcedureParams, include_samples: bool = Query(False, descr
             n_samples=params.n_samples,
             seed=params.seed,
         )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Simulation error: {e}")
+        logger.error("Simulation error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal simulation error.")
 
     if not include_samples:
         result = _drop_samples(result)
@@ -499,8 +508,11 @@ def compare(req: CompareRequest, include_samples: bool = Query(False)):
             label_b=req.label_b,
             n_samples=req.n_samples,
         )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Comparison error: {e}")
+        logger.error("Comparison error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal comparison error.")
 
     if not include_samples:
         result["scenario_a"] = _drop_samples(result["scenario_a"])
@@ -532,8 +544,11 @@ def benchmark(req: BenchmarkRequest):
             year_from=req.year_from,
             year_to=req.year_to,
         )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Benchmark error: {e}")
+        logger.error("Benchmark error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal benchmark error.")
 
     if result["n_records"] == 0:
         return JSONResponse(
@@ -583,8 +598,11 @@ def policy_simulation(req: PolicyRequest):
             n_records=req.n_records,
             seed=req.seed,
         )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Policy simulation error: {e}")
+        logger.error("Policy simulation error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal policy simulation error.")
 
     if "error" in result:
         return JSONResponse(
@@ -624,8 +642,11 @@ def explain(req: ExplainRequest):
     """
     try:
         result = _twin.compute_shap(req.to_twin_params())
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Explain error: {e}")
+        logger.error("Explain error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal explain error.")
 
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])

@@ -196,15 +196,16 @@ proc = proc.with_columns([
       .otherwise(None).alias("price_ratio"),
 ])
 
-def vb(v):
-    if v is None or v <= 0: return "Unknown"
-    if v < 135_000:  return "Below 135k"
-    if v < 215_000:  return "135k-215k"
-    if v < 431_000:  return "215k-431k"
-    if v < 5_000_000: return "431k-5M"
-    if v < 50_000_000: return "5M-50M"
-    return ">50M"
-proc = proc.with_columns(pl.Series("value_bracket", [vb(v) for v in proc["value_euro"].to_list()]))
+proc = proc.with_columns(
+    pl.when(pl.col("value_euro").is_null() | (pl.col("value_euro") <= 0)).then(pl.lit("Unknown"))
+      .when(pl.col("value_euro") < 135_000).then(pl.lit("Below 135k"))
+      .when(pl.col("value_euro") < 215_000).then(pl.lit("135k-215k"))
+      .when(pl.col("value_euro") < 431_000).then(pl.lit("215k-431k"))
+      .when(pl.col("value_euro") < 5_000_000).then(pl.lit("431k-5M"))
+      .when(pl.col("value_euro") < 50_000_000).then(pl.lit("5M-50M"))
+      .otherwise(pl.lit(">50M"))
+      .alias("value_bracket")
+)
 
 # Competition
 proc = proc.with_columns([

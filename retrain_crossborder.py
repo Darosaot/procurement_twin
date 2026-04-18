@@ -16,15 +16,23 @@ import os, sys, json, pickle, ssl
 import numpy as np
 import pandas as pd
 
-# ── SSL fix for Homebrew Python ────────────────────────────────────
-_orig_ctx = ssl.create_default_context
-def _patched_ctx(*args, **kwargs):
-    ctx = _orig_ctx(*args, **kwargs)
-    ctx.check_hostname = False
-    ctx.verify_mode    = ssl.CERT_NONE
-    return ctx
-ssl.create_default_context        = _patched_ctx
-ssl._create_default_https_context = ssl._create_unverified_context
+# ── Optional SSL workaround — disabled by default ─────────────────
+# Activate only when certs cannot be fixed: PROCUREMENT_SKIP_SSL_VERIFY=1
+if os.environ.get("PROCUREMENT_SKIP_SSL_VERIFY") == "1":
+    import warnings as _w
+    _w.warn(
+        "SSL certificate verification DISABLED (PROCUREMENT_SKIP_SSL_VERIFY=1). "
+        "Only use this on a trusted network.",
+        stacklevel=1,
+    )
+    _orig_ctx = ssl.create_default_context
+    def _patched_ctx(*args, **kwargs):
+        ctx = _orig_ctx(*args, **kwargs)
+        ctx.check_hostname = False
+        ctx.verify_mode    = ssl.CERT_NONE
+        return ctx
+    ssl.create_default_context        = _patched_ctx
+    ssl._create_default_https_context = ssl._create_unverified_context
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
@@ -158,7 +166,7 @@ except Exception as e:
     print("  Set HF_TOKEN env var or run: hf auth login")
     sys.exit(1)
 
-HF_REPO   = "Daniarosa/procurement-twin-artifacts"
+HF_REPO   = os.environ.get("HF_REPO", "Daniarosa/procurement-twin-artifacts")
 REPO_TYPE = "dataset"
 
 uploads = [
