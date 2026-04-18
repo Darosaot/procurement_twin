@@ -22,10 +22,10 @@ POST /policy             Aggregate counterfactual policy simulation
 POST /explain            Per-prediction SHAP feature contributions
 """
 
-import sys, os, json, time, logging, asyncio, functools
+import sys, os, json, time, logging, asyncio, functools, csv, io
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -52,17 +52,36 @@ for _p in [_PROJECT_ROOT, _SRC_DIR]:
 
 MODEL_DIR = os.path.join(_PROJECT_ROOT, "models")
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    _SLOWAPI = True
+except ImportError:
+    _SLOWAPI = False
+    logger.warning("slowapi not installed — rate limiting disabled.")
+
 from simulation.simulation_engine import (
     ProcurementTwin, COUNTRY_CLUSTERS, CPV_SECTORS, value_bracket
 )
+from api.auth    import require_api_key, AUTH_ENABLED
+from api.cache   import simulation_cache
+from api.metrics import track_simulation, record_cache_hit, record_cache_miss, prometheus_response
+from api.history import simulation_history
+
+# ── Rate limiter ──────────────────────────────────────────────────
+_RATE_LIMIT = os.environ.get("RATE_LIMIT", "60/minute")
+if _SLOWAPI:
+    _limiter = Limiter(key_func=get_remote_address, default_limits=[_RATE_LIMIT])
+else:
+    _limiter = None
 
 # ── App initialisation ────────────────────────────────────────────
 app = FastAPI(
@@ -71,18 +90,23 @@ app = FastAPI(
         "REST API for the EU Procurement Digital Twin. "
         "Simulates competition, cross-border participation, price ratios and "
         "procedure duration from 1.1 million TED contract records (2018–2023). "
-        "All simulation endpoints use calibrated Monte Carlo sampling."
+        "All simulation endpoints use calibrated Monte Carlo sampling.\n\n"
+        "**Auth**: pass `X-API-Key: <key>` header when `API_KEYS` is configured.\n"
+        "**Rate limit**: configurable via `RATE_LIMIT` env var (default 60/minute)."
     ),
-    version="2.0.0",
+    version="3.0.0",
     contact={"name": "Procurement Digital Twin"},
     license_info={"name": "Internal use"},
 )
+if _SLOWAPI and _limiter:
+    app.state.limiter = _limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
 
@@ -363,6 +387,86 @@ class ExplainRequest(ProcedureParams):
         return self.model_dump(exclude={"n_samples", "seed"})
 
 
+_SENSITIVITY_NUMERIC = {
+    "prep_time_days":   {"min": 14.0,        "max": 90.0},
+    "value_euro":       {"min": 50_000.0,    "max": 50_000_000.0},
+    "price_weight_pct": {"min": 0.0,         "max": 100.0},
+    "duration_months":  {"min": 1.0,         "max": 120.0},
+}
+
+
+class SensitivityRequest(BaseModel):
+    """Sweep one numeric parameter across a range, holding all others fixed."""
+    base_params: ProcedureParams
+    param: str = Field(..., description=(
+        "Parameter to sweep. Must be one of: "
+        + ", ".join(sorted(_SENSITIVITY_NUMERIC))
+    ))
+    values: Optional[List[float]] = Field(
+        None,
+        description="Explicit list of values to test (max 20). Provide this OR n_steps.",
+        max_length=20,
+    )
+    n_steps: Optional[int] = Field(
+        None, ge=2, le=20,
+        description="Auto-generate n_steps evenly-spaced values between the param's min and max.",
+    )
+    n_samples: int = Field(1000, ge=100, le=5000, description="MC samples per data point.")
+    seed: int = Field(42, ge=0)
+
+    @field_validator("param")
+    @classmethod
+    def validate_param(cls, v):
+        if v not in _SENSITIVITY_NUMERIC:
+            raise ValueError(
+                f"param must be one of {sorted(_SENSITIVITY_NUMERIC)}. "
+                "Boolean flags are not supported for sensitivity sweeps."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def check_values_or_steps(self):
+        if self.values is None and self.n_steps is None:
+            raise ValueError("Provide either 'values' (explicit list) or 'n_steps' (auto-range).")
+        if self.values is not None and self.n_steps is not None:
+            raise ValueError("Provide 'values' OR 'n_steps', not both.")
+        return self
+
+    def resolved_values(self) -> List[float]:
+        if self.values is not None:
+            return self.values
+        spec = _SENSITIVITY_NUMERIC[self.param]
+        import numpy as np
+        return [round(float(v), 4) for v in np.linspace(spec["min"], spec["max"], self.n_steps)]
+
+
+class BatchRequest(BaseModel):
+    """Submit up to 20 procedures for parallel simulation."""
+    procedures: List[ProcedureParams] = Field(..., min_length=1, max_length=20)
+    include_samples: bool = Field(False)
+
+    @field_validator("procedures")
+    @classmethod
+    def check_length(cls, v):
+        if len(v) > 20:
+            raise ValueError("Batch size is limited to 20 procedures.")
+        return v
+
+
+class ExportFormat(BaseModel):
+    """Format selector for the /export endpoint."""
+    data: Dict[str, Any] = Field(..., description="Simulation result dict to export.")
+    format: str = Field("csv", description="Output format: 'csv' or 'json'.")
+    filename: str = Field("export", max_length=60, description="Base filename (no extension).")
+
+    @field_validator("format")
+    @classmethod
+    def validate_format(cls, v):
+        if v not in ("csv", "json"):
+            raise ValueError("format must be 'csv' or 'json'.")
+        return v
+
+
 # ─────────────────────────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────────────────────────
@@ -403,14 +507,20 @@ def index():
         "redoc":       "/redoc",
         "endpoints": {
             "GET  /health":         "Health check + model status",
+            "GET  /status":         "Cache, history, and worker stats",
+            "GET  /metrics":        "Prometheus metrics scrape endpoint",
+            "GET  /history":        "Recent simulation run log",
             "GET  /metadata":       "Reference lists (countries, CPVs, procedure types)",
             "GET  /models":         "Model evaluation metrics",
             "GET  /explain/global": "Global feature importances for all models",
-            "POST /simulate":       "Single-procedure Monte Carlo simulation",
+            "POST /simulate":       "Single-procedure Monte Carlo simulation (cached)",
+            "POST /batch":          "Parallel simulation of up to 20 procedures",
+            "POST /sensitivity":    "Sweep one parameter across a range",
             "POST /compare":        "Side-by-side comparison of two procedure designs",
             "POST /benchmark":      "Empirical statistics from historical data",
             "POST /policy":         "Aggregate counterfactual policy simulation",
             "POST /explain":        "Per-prediction feature contributions (SHAP)",
+            "POST /export":         "Download any result as CSV or JSON",
         },
     }
 
@@ -526,40 +636,52 @@ def explain_global():
     tags=["Simulation"],
     summary="Single-procedure simulation",
     response_model=SimulationResponse,
+    dependencies=[Depends(require_api_key)],
 )
-def simulate(params: ProcedureParams, include_samples: bool = Query(False, description="Include raw Monte Carlo sample arrays in the response.")):
+def simulate(
+    params: ProcedureParams,
+    request: Request,
+    include_samples: bool = Query(False),
+):
     """
     Run a Monte Carlo simulation for a single procedure design.
 
-    Returns distributional predictions (mean, median, percentiles) for:
-    - **competition** — expected number of offers received
-    - **single_bid_risk** — probability of receiving only one bid
-    - **cross_border** — probability of a cross-border winner
-    - **price_ratio** — expected award value ÷ estimated value
-    - **duration** — expected procedure duration in days
-
-    All predictions use 5 calibrated models trained on 1.1M TED contracts.
-    Calibration offsets are applied per CPV sector and country cluster.
+    Results are cached by (params + seed) — identical requests return instantly.
+    Cache TTL is 1 hour by default (configurable via `CACHE_TTL` env var).
     """
     t0 = time.time()
-    try:
-        result = _twin.simulate(
-            params.to_twin_params(),
-            n_samples=params.n_samples,
-            seed=params.seed,
-        )
-    except (KeyError, ValueError, TypeError) as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except (AttributeError, IndexError, RuntimeError) as e:
-        logger.error("Simulation error: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal simulation error.")
-    except Exception as e:
-        logger.error("Unexpected simulation error: %s", type(e).__name__, exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal simulation error.")
+    cache_key = {**params.to_twin_params(), "_n": params.n_samples, "_seed": params.seed}
+    cached = simulation_cache.get(cache_key)
+    if cached is not None:
+        record_cache_hit()
+        result = cached.copy()
+        result["meta"] = _meta(t0, params.n_samples, params.seed)
+        result["meta"].cached = True  # type: ignore[attr-defined]
+        simulation_history.record("/simulate", cache_key, (time.time()-t0)*1000, 200, cached=True)
+        return result if include_samples else {k: (v if k != "competition" else _drop_samples({"x": v})["x"]) for k, v in result.items()}
+
+    record_cache_miss()
+    with track_simulation("/simulate"):
+        try:
+            result = _twin.simulate(
+                params.to_twin_params(),
+                n_samples=params.n_samples,
+                seed=params.seed,
+            )
+        except (KeyError, ValueError, TypeError) as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except (AttributeError, IndexError, RuntimeError) as e:
+            logger.error("Simulation error: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail="Internal simulation error.")
+        except Exception as e:
+            logger.error("Unexpected simulation error: %s", type(e).__name__, exc_info=True)
+            raise HTTPException(status_code=500, detail="Internal simulation error.")
+
+    simulation_cache.set(cache_key, result)
+    simulation_history.record("/simulate", cache_key, (time.time()-t0)*1000, 200)
 
     if not include_samples:
         result = _drop_samples(result)
-
     result["meta"] = _meta(t0, params.n_samples, params.seed)
     return result
 
@@ -568,6 +690,7 @@ def simulate(params: ProcedureParams, include_samples: bool = Query(False, descr
     "/compare",
     tags=["Simulation"],
     summary="Compare two procedure designs",
+    dependencies=[Depends(require_api_key)],
 )
 def compare(req: CompareRequest, include_samples: bool = Query(False)):
     """
@@ -604,6 +727,7 @@ def compare(req: CompareRequest, include_samples: bool = Query(False)):
         result["scenario_a"] = _drop_samples(result["scenario_a"])
         result["scenario_b"] = _drop_samples(result["scenario_b"])
 
+    simulation_history.record("/compare", {"a": req.scenario_a.model_dump(), "b": req.scenario_b.model_dump()}, (time.time()-t0)*1000, 200)
     result["meta"] = _meta(t0, req.n_samples, 42)
     return result
 
@@ -612,6 +736,7 @@ def compare(req: CompareRequest, include_samples: bool = Query(False)):
     "/benchmark",
     tags=["Empirical Data"],
     summary="Historical empirical benchmark",
+    dependencies=[Depends(require_api_key)],
 )
 async def benchmark(req: BenchmarkRequest):
     """
@@ -654,6 +779,7 @@ async def benchmark(req: BenchmarkRequest):
     "/policy",
     tags=["Simulation"],
     summary="Aggregate policy simulation",
+    dependencies=[Depends(require_api_key)],
 )
 async def policy_simulation(req: PolicyRequest):
     """
@@ -723,6 +849,7 @@ async def policy_simulation(req: PolicyRequest):
     "/explain",
     tags=["Explainability"],
     summary="Per-prediction feature contributions",
+    dependencies=[Depends(require_api_key)],
 )
 def explain(req: ExplainRequest):
     """
@@ -766,13 +893,246 @@ def explain(req: ExplainRequest):
 
 
 # ─────────────────────────────────────────────────────────────────
+# NEW ENDPOINTS — Sprint 5+6
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/metrics", tags=["Observability"], summary="Prometheus metrics")
+def metrics_endpoint():
+    body, content_type = prometheus_response()
+    if body is None:
+        raise HTTPException(status_code=503, detail="prometheus-client not installed.")
+    return Response(content=body, media_type=content_type)
+
+
+@app.get("/status", tags=["Info"], summary="System status")
+def status():
+    """Cache stats, history stats, rate-limit config, and worker info."""
+    return {
+        "version":        "3.0.0",
+        "auth_enabled":   AUTH_ENABLED,
+        "rate_limit":     _RATE_LIMIT,
+        "cache":          simulation_cache.stats,
+        "history":        simulation_history.aggregate_stats(),
+        "workers": {
+            "blocking_pool": int(os.environ.get("POLICY_WORKERS", "2")),
+        },
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@app.get("/history", tags=["Observability"], summary="Recent simulation runs")
+def history(
+    limit:    int = Query(50, ge=1, le=200),
+    offset:   int = Query(0, ge=0),
+    endpoint: Optional[str] = Query(None),
+):
+    """Return the N most recent simulation run records (newest first)."""
+    rows = simulation_history.recent(limit=limit, offset=offset, endpoint=endpoint)
+    return {"runs": rows, "count": len(rows), "limit": limit, "offset": offset}
+
+
+@app.post(
+    "/batch",
+    tags=["Simulation"],
+    summary="Batch parallel simulation",
+    dependencies=[Depends(require_api_key)],
+)
+def batch_simulate(req: BatchRequest):
+    """
+    Simulate up to 20 procedures in parallel.
+
+    Each procedure is simulated independently. Results arrive in the same
+    order as the input list. Cache applies per procedure.
+
+    **Typical use:** compare a portfolio of contracts or test many CPV divisions.
+    """
+    t0 = time.time()
+    results = [None] * len(req.procedures)
+
+    def _run_one(idx: int, p: "ProcedureParams"):
+        cache_key = {**p.to_twin_params(), "_n": p.n_samples, "_seed": p.seed}
+        cached = simulation_cache.get(cache_key)
+        if cached is not None:
+            record_cache_hit()
+            r = cached.copy()
+            if not req.include_samples:
+                r = _drop_samples(r)
+            return idx, r, True
+        record_cache_miss()
+        r = _twin.simulate(p.to_twin_params(), n_samples=p.n_samples, seed=p.seed)
+        simulation_cache.set(cache_key, r)
+        if not req.include_samples:
+            r = _drop_samples(r)
+        return idx, r, False
+
+    from concurrent.futures import as_completed
+    futures = {
+        _blocking_executor.submit(_run_one, i, p): i
+        for i, p in enumerate(req.procedures)
+    }
+    try:
+        for fut in as_completed(futures, timeout=_REQUEST_TIMEOUT - 5):
+            idx, r, was_cached = fut.result()
+            results[idx] = r
+    except Exception as e:
+        logger.error("Batch simulation error: %s", type(e).__name__, exc_info=True)
+        raise HTTPException(status_code=500, detail="One or more batch simulations failed.")
+
+    simulation_history.record("/batch", {"n_procedures": len(req.procedures)}, (time.time()-t0)*1000, 200)
+    return {
+        "results":    results,
+        "n":          len(results),
+        "duration_ms": round((time.time() - t0) * 1000, 1),
+        "timestamp":  datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@app.post(
+    "/sensitivity",
+    tags=["Simulation"],
+    summary="Sensitivity analysis",
+    dependencies=[Depends(require_api_key)],
+)
+def sensitivity(req: SensitivityRequest):
+    """
+    Sweep one numeric parameter across a range while holding all others fixed.
+
+    Returns how all 5 outcomes change as the parameter varies — the most useful
+    tool for procurement officers tuning procedure design.
+
+    **Example**: sweep `prep_time_days` from 14 to 90 in 10 steps and see
+    how expected competition, single-bid risk, and duration respond.
+    """
+    import numpy as np
+    t0 = time.time()
+    values = req.resolved_values()
+    base   = req.base_params.to_twin_params()
+
+    outcome_series: Dict[str, list] = {
+        "competition":     [],
+        "single_bid_risk": [],
+        "cross_border":    [],
+        "price_ratio":     [],
+        "duration":        [],
+    }
+
+    for i, val in enumerate(values):
+        params = {**base, req.param: val}
+        cache_key = {**params, "_n": req.n_samples, "_seed": req.seed + i}
+        cached = simulation_cache.get(cache_key)
+        if cached is not None:
+            record_cache_hit()
+            r = cached
+        else:
+            record_cache_miss()
+            r = _twin.simulate(params, n_samples=req.n_samples, seed=req.seed + i)
+            simulation_cache.set(cache_key, r)
+
+        outcome_series["competition"].append({
+            "value": val,
+            "mean": r["competition"]["mean"],
+            "p25":  r["competition"]["p25"],
+            "p75":  r["competition"]["p75"],
+        })
+        outcome_series["single_bid_risk"].append({
+            "value":       val,
+            "probability": r["single_bid_risk"]["probability"],
+        })
+        outcome_series["cross_border"].append({
+            "value":       val,
+            "probability": r["cross_border"]["probability"],
+        })
+        outcome_series["price_ratio"].append({
+            "value": val,
+            "mean":  r["price_ratio"]["mean"],
+            "p25":   r["price_ratio"]["p25"],
+            "p75":   r["price_ratio"]["p75"],
+        })
+        outcome_series["duration"].append({
+            "value": val,
+            "mean":  r["duration"]["mean"],
+            "p25":   r["duration"]["p25"],
+            "p75":   r["duration"]["p75"],
+        })
+
+    simulation_history.record("/sensitivity", {"param": req.param, "n_values": len(values)}, (time.time()-t0)*1000, 200)
+    return {
+        "param":         req.param,
+        "values_tested": values,
+        "outcomes":      outcome_series,
+        "base_params":   base,
+        "meta": {
+            "n_samples":   req.n_samples,
+            "n_values":    len(values),
+            "duration_ms": round((time.time() - t0) * 1000, 1),
+            "timestamp":   datetime.utcnow().isoformat() + "Z",
+        },
+    }
+
+
+@app.post(
+    "/export",
+    tags=["Utilities"],
+    summary="Export simulation result as CSV or JSON",
+    dependencies=[Depends(require_api_key)],
+)
+def export(req: ExportFormat):
+    """
+    Convert any simulation result dict (from /simulate, /compare, /sensitivity)
+    to a downloadable CSV or JSON file.
+
+    The CSV flattens nested dicts with dot-notation keys, making it easy to
+    open results in Excel or pandas.
+    """
+    ext = req.format
+    filename = f"{req.filename}.{ext}"
+
+    if ext == "json":
+        body = json.dumps(req.data, indent=2, default=str).encode()
+        return StreamingResponse(
+            io.BytesIO(body),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    # Flatten nested dict → CSV
+    def _flatten(d: dict, prefix: str = "") -> dict:
+        out = {}
+        for k, v in d.items():
+            key = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, dict):
+                out.update(_flatten(v, key))
+            elif isinstance(v, list):
+                for i, item in enumerate(v):
+                    if isinstance(item, dict):
+                        out.update(_flatten(item, f"{key}[{i}]"))
+                    else:
+                        out[f"{key}[{i}]"] = item
+            else:
+                out[key] = v
+        return out
+
+    flat = _flatten(req.data)
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(flat.keys()))
+    writer.writeheader()
+    writer.writerow(flat)
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue().encode()),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────
 # ENTRY POINT (when run directly)
 # ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    print("\n" + "=" * 60)
-    print("PROCUREMENT DIGITAL TWIN — REST API")
-    print("=" * 60)
-    print("\n  Docs:  http://localhost:8000/docs")
-    print("  ReDoc: http://localhost:8000/redoc\n")
+    logger.info("=" * 60)
+    logger.info("PROCUREMENT DIGITAL TWIN — REST API v3.0.0")
+    logger.info("=" * 60)
+    logger.info("Docs:    http://localhost:8000/docs")
+    logger.info("ReDoc:   http://localhost:8000/redoc")
+    logger.info("Metrics: http://localhost:8000/metrics")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)

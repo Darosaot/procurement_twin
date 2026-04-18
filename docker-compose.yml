@@ -1,27 +1,31 @@
 # Procurement Digital Twin — Docker Compose
 # ─────────────────────────────────────────
-# Start:   docker compose up
-# Stop:    docker compose down
-# Rebuild: docker compose up --build
+# Quick start:
+#   cp .env.example .env   # fill in JUPYTER_TOKEN (required)
+#   docker compose up
 #
 # Services
 #   twin     → Plotly Dash dashboard   http://localhost:8050
 #   api      → FastAPI REST API        http://localhost:8000
 #                Swagger UI            http://localhost:8000/docs
-#                ReDoc                 http://localhost:8000/redoc
+#                Prometheus metrics    http://localhost:8000/metrics
 #   jupyter  → Jupyter Notebook        http://localhost:8888
-#                notebooks/analysis_demo.ipynb   ← start here
 
 services:
   twin:
     build: .
     container_name: procurement-twin
     ports:
-      - "8050:8050"         # Dashboard → http://localhost:8050
+      - "8050:8050"
     volumes:
       - "./Procurement data:/app/Procurement data:ro"
+      - "feat_cache:/app/data"       # persist lazy-loaded feature store
     environment:
       - PYTHONUNBUFFERED=1
+      - FEAT_DIR=/app/data/features
+      - MODEL_DIR=/app/models
+    env_file:
+      - .env
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -34,14 +38,20 @@ services:
   api:
     build: .
     container_name: procurement-api
-    command: python run_api.py --host 0.0.0.0 --port 8000
+    command: python run_api.py --host 0.0.0.0 --port 8000 --workers 2
     ports:
-      - "8000:8000"         # REST API  → http://localhost:8000
-                            # Swagger   → http://localhost:8000/docs
+      - "8000:8000"
     volumes:
       - "./Procurement data:/app/Procurement data:ro"
+      - "api_data:/app/data"         # persist simulation history DB
     environment:
       - PYTHONUNBUFFERED=1
+      - FEAT_DIR=/app/data/features
+      - MODEL_DIR=/app/models
+      - HISTORY_DB_PATH=/app/data/history.db
+      - POLICY_WORKERS=2
+    env_file:
+      - .env
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -59,21 +69,19 @@ services:
         --ip=0.0.0.0
         --port=8888
         --no-browser
-        --ServerApp.token=${JUPYTER_TOKEN:?JUPYTER_TOKEN env var must be set — use a strong random value}
+        --ServerApp.token=${JUPYTER_TOKEN:?JUPYTER_TOKEN env var must be set — use: openssl rand -hex 32}
         --ServerApp.root_dir=/app/notebooks
     ports:
-      - "8888:8888"         # Jupyter → http://localhost:8888
+      - "8888:8888"
     volumes:
-      # notebooks/ is writable so users can save their own analyses
       - "./notebooks:/app/notebooks"
       - "./Procurement data:/app/Procurement data:ro"
     environment:
       - PYTHONUNBUFFERED=1
-      # Notebooks resolve the API via the Docker service name, not localhost
       - TWIN_API_BASE=http://api:8000
-      # Required: set JUPYTER_TOKEN to a strong random secret before starting.
-      # Generate one with: openssl rand -hex 32
       - JUPYTER_TOKEN=${JUPYTER_TOKEN}
+    env_file:
+      - .env
     depends_on:
       - api
     restart: unless-stopped
@@ -84,3 +92,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+volumes:
+  feat_cache:   # shared feature store cache
+  api_data:     # API history database
