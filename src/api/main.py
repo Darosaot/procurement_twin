@@ -28,6 +28,13 @@ from typing import Optional, List, Dict, Any
 import warnings
 warnings.filterwarnings("ignore")
 
+# ── Request timeout (seconds) — override via API_TIMEOUT_SECONDS env var ──
+_REQUEST_TIMEOUT = int(os.environ.get("API_TIMEOUT_SECONDS", "120"))
+
+# ── CORS — comma-separated origins via CORS_ORIGINS env var ───────────────
+_DEFAULT_CORS = "http://localhost:8050,http://localhost:8888,http://127.0.0.1:8050,http://127.0.0.1:8888"
+_CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", _DEFAULT_CORS).split(",") if o.strip()]
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -44,10 +51,13 @@ for _p in [_PROJECT_ROOT, _SRC_DIR]:
 
 MODEL_DIR = os.path.join(_PROJECT_ROOT, "models")
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 from simulation.simulation_engine import (
     ProcurementTwin, COUNTRY_CLUSTERS, CPV_SECTORS, value_bracket
@@ -69,10 +79,30 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_CORS_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+
+class _TimeoutMiddleware(BaseHTTPMiddleware):
+    """Abort requests that exceed _REQUEST_TIMEOUT seconds."""
+
+    async def dispatch(self, request: Request, call_next):
+        import asyncio
+        try:
+            return await asyncio.wait_for(call_next(request), timeout=_REQUEST_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning("Request timed out after %ds: %s %s",
+                           _REQUEST_TIMEOUT, request.method, request.url.path)
+            return Response(
+                content='{"detail":"Request timed out. Try reducing n_records or n_samples."}',
+                status_code=504,
+                media_type="application/json",
+            )
+
+
+app.add_middleware(_TimeoutMiddleware)
 
 # ── Load twin once at startup ─────────────────────────────────────
 logger.info("Loading Procurement Twin models...")
@@ -87,6 +117,8 @@ logger.info("Models ready.")
 VALID_PROCEDURE_TYPES = {"OPE", "RES", "NIC", "COD", "INP", "AWP", "NOC"}
 VALID_CONTRACT_TYPES  = {"S", "U", "W"}
 VALID_CRITERIA        = {"M", "L"}
+VALID_COUNTRIES       = frozenset(COUNTRY_CLUSTERS.keys())
+VALID_CPV_DIVISIONS   = frozenset(CPV_SECTORS.keys())
 
 
 class ProcedureParams(BaseModel):
@@ -156,6 +188,26 @@ class ProcedureParams(BaseModel):
     def validate_criteria(cls, v):
         if v not in VALID_CRITERIA:
             raise ValueError(f"criteria must be one of {sorted(VALID_CRITERIA)}")
+        return v
+
+    @field_validator("country")
+    @classmethod
+    def validate_country(cls, v):
+        if v not in VALID_COUNTRIES:
+            raise ValueError(
+                f"Unknown country code '{v}'. "
+                f"Valid codes: {sorted(VALID_COUNTRIES)}"
+            )
+        return v
+
+    @field_validator("cpv_division")
+    @classmethod
+    def validate_cpv_division(cls, v):
+        if v not in VALID_CPV_DIVISIONS:
+            raise ValueError(
+                f"Unknown CPV division '{v}'. "
+                f"Valid codes: {sorted(VALID_CPV_DIVISIONS)}"
+            )
         return v
 
     def to_twin_params(self) -> dict:
@@ -233,6 +285,27 @@ class BenchmarkRequest(BaseModel):
     cpv_division:   Optional[str] = Field(None, description="Filter by 2-digit CPV division.")
     year_from:      Optional[int] = Field(None, ge=2018, le=2023)
     year_to:        Optional[int] = Field(None, ge=2018, le=2023)
+
+    @field_validator("country")
+    @classmethod
+    def validate_country(cls, v):
+        if v is not None and v not in VALID_COUNTRIES:
+            raise ValueError(f"Unknown country code '{v}'. Valid codes: {sorted(VALID_COUNTRIES)}")
+        return v
+
+    @field_validator("procedure_type")
+    @classmethod
+    def validate_procedure_type(cls, v):
+        if v is not None and v not in VALID_PROCEDURE_TYPES:
+            raise ValueError(f"procedure_type must be one of {sorted(VALID_PROCEDURE_TYPES)}")
+        return v
+
+    @field_validator("cpv_division")
+    @classmethod
+    def validate_cpv_division(cls, v):
+        if v is not None and v not in VALID_CPV_DIVISIONS:
+            raise ValueError(f"Unknown CPV division '{v}'. Valid codes: {sorted(VALID_CPV_DIVISIONS)}")
+        return v
 
 
 class PolicyIntervention(BaseModel):
@@ -468,10 +541,13 @@ def simulate(params: ProcedureParams, include_samples: bool = Query(False, descr
             n_samples=params.n_samples,
             seed=params.seed,
         )
-    except (KeyError, ValueError) as e:
+    except (KeyError, ValueError, TypeError) as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
+    except (AttributeError, IndexError, RuntimeError) as e:
         logger.error("Simulation error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal simulation error.")
+    except Exception as e:
+        logger.error("Unexpected simulation error: %s", type(e).__name__, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal simulation error.")
 
     if not include_samples:
@@ -508,10 +584,13 @@ def compare(req: CompareRequest, include_samples: bool = Query(False)):
             label_b=req.label_b,
             n_samples=req.n_samples,
         )
-    except (KeyError, ValueError) as e:
+    except (KeyError, ValueError, TypeError) as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
+    except (AttributeError, IndexError, RuntimeError) as e:
         logger.error("Comparison error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal comparison error.")
+    except Exception as e:
+        logger.error("Unexpected comparison error: %s", type(e).__name__, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal comparison error.")
 
     if not include_samples:
@@ -544,10 +623,13 @@ def benchmark(req: BenchmarkRequest):
             year_from=req.year_from,
             year_to=req.year_to,
         )
-    except (KeyError, ValueError) as e:
+    except (KeyError, ValueError, TypeError) as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
+    except (AttributeError, IndexError, RuntimeError) as e:
         logger.error("Benchmark error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal benchmark error.")
+    except Exception as e:
+        logger.error("Unexpected benchmark error: %s", type(e).__name__, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal benchmark error.")
 
     if result["n_records"] == 0:
@@ -598,10 +680,13 @@ def policy_simulation(req: PolicyRequest):
             n_records=req.n_records,
             seed=req.seed,
         )
-    except (KeyError, ValueError) as e:
+    except (KeyError, ValueError, TypeError) as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
+    except (AttributeError, IndexError, RuntimeError) as e:
         logger.error("Policy simulation error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal policy simulation error.")
+    except Exception as e:
+        logger.error("Unexpected policy simulation error: %s", type(e).__name__, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal policy simulation error.")
 
     if "error" in result:
@@ -642,10 +727,13 @@ def explain(req: ExplainRequest):
     """
     try:
         result = _twin.compute_shap(req.to_twin_params())
-    except (KeyError, ValueError) as e:
+    except (KeyError, ValueError, TypeError) as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
+    except (AttributeError, IndexError, RuntimeError) as e:
         logger.error("Explain error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal explain error.")
+    except Exception as e:
+        logger.error("Unexpected explain error: %s", type(e).__name__, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal explain error.")
 
     if "error" in result:

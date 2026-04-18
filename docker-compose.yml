@@ -59,7 +59,7 @@ services:
         --ip=0.0.0.0
         --port=8888
         --no-browser
-        --ServerApp.token=${JUPYTER_TOKEN:-procurement-twin}
+        --ServerApp.token=${JUPYTER_TOKEN:?JUPYTER_TOKEN env var must be set — use a strong random value}
         --ServerApp.root_dir=/app/notebooks
     ports:
       - "8888:8888"         # Jupyter → http://localhost:8888
@@ -71,8 +71,9 @@ services:
       - PYTHONUNBUFFERED=1
       # Notebooks resolve the API via the Docker service name, not localhost
       - TWIN_API_BASE=http://api:8000
-      # Override with: JUPYTER_TOKEN=mysecret docker compose up
-      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-procurement-twin}
+      # Required: set JUPYTER_TOKEN to a strong random secret before starting.
+      # Generate one with: openssl rand -hex 32
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN}
     depends_on:
       - api
     restart: unless-stopped
