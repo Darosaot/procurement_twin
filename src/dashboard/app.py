@@ -10,11 +10,13 @@ Six tabs:
   6. 📖 Methodology          — how the models work, calibration, Monte Carlo, limitations
 """
 
-import sys, os, json
+import sys, os, json, logging
 
 _THIS_DIR     = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
 _SRC_DIR      = os.path.join(_PROJECT_ROOT, "src")
+
+logger = logging.getLogger(__name__)
 
 for _p in [_PROJECT_ROOT, _SRC_DIR]:
     if _p not in sys.path:
@@ -34,9 +36,19 @@ import polars as pl
 from simulation.simulation_engine import (
     ProcurementTwin, COUNTRY_CLUSTERS, CPV_SECTORS, value_bracket
 )
+from dashboard.analysis_sandbox import run_code as _sandbox_run
 
 # ── Initialise twin ───────────────────────────────────────────────
 twin = ProcurementTwin()
+
+# ── Pre-load feature store for the Analysis sandbox ───────────────
+_FEAT_PATH = os.path.join(FEAT_DIR, "procedure_records.parquet")
+try:
+    _SANDBOX_DF = pl.read_parquet(_FEAT_PATH).to_pandas()
+    logger.info("Feature store loaded for sandbox: %d rows", len(_SANDBOX_DF))
+except Exception as _e:
+    logger.warning("Could not load feature store for sandbox: %s", _e)
+    _SANDBOX_DF = pd.DataFrame()
 
 # ── Reference lists ───────────────────────────────────────────────
 COUNTRIES = sorted(["AT","BE","BG","CY","CZ","DE","DK","EE","ES","FI","FR","GR",
@@ -347,6 +359,7 @@ app.layout = html.Div([
         dcc.Tab(label="🏛️  Policy Simulation",    value="tab-policy"),
         dcc.Tab(label="💡  Explain",               value="tab-explain"),
         dcc.Tab(label="📖  Methodology",           value="tab-methodology"),
+        dcc.Tab(label="🧪  Analysis",              value="tab-analysis"),
     ]),
 
     html.Div(id="tab-content", style={"minHeight":"600px"}),
@@ -362,6 +375,7 @@ def render_tab(tab):
     if tab == "tab-policy":      return policy_layout()
     if tab == "tab-explain":     return explain_layout()
     if tab == "tab-methodology": return methodology_layout()
+    if tab == "tab-analysis":   return analysis_layout()
     return html.Div("Unknown tab")
 
 
@@ -1777,6 +1791,303 @@ def run_explain(n, country, proc, ctype, cpv, crit, val, prep, dur):
                   "marginBottom":"14px"}),
         html.Div(charts, style={"display":"flex","gap":"12px","flexWrap":"wrap"}),
     ])
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB 7: ANALYSIS  —  sandboxed Python notebook
+# ══════════════════════════════════════════════════════════════════
+
+_ANALYSIS_EXAMPLES = {
+    "Basic simulation": """\
+result = twin.simulate({
+    "country": "DE",
+    "procedure_type": "OPE",
+    "contract_type": "S",
+    "cpv_division": "72",
+    "criteria": "M",
+    "value_euro": 500_000,
+    "prep_time_days": 35,
+})
+print("Expected bids:", round(result["competition"]["mean"], 2))
+print("Single-bid risk:", round(result["single_bid_risk"]["probability"], 3))
+print("Price ratio:", round(result["price_ratio"]["mean"], 3))
+""",
+
+    "Compare two designs": """\
+comp = twin.compare(
+    {"country": "PL", "procedure_type": "OPE", "criteria": "L",
+     "value_euro": 1_000_000, "prep_time_days": 35},
+    {"country": "PL", "procedure_type": "OPE", "criteria": "M",
+     "value_euro": 1_000_000, "prep_time_days": 35},
+    label_a="Lowest price", label_b="MEAT",
+)
+for outcome, d in comp["deltas"].items():
+    pct = f"{d['delta_pct']:+.1f}%" if d["delta_pct"] is not None else "n/a"
+    print(f"{outcome:20s}  A={d['a']:.3f}  B={d['b']:.3f}  Δ={pct}")
+""",
+
+    "Sweep prep time": """\
+import plotly.graph_objects as go
+
+prep_days = list(range(15, 91, 5))
+bids, single_bid = [], []
+
+for days in prep_days:
+    r = twin.simulate({"country": "FR", "procedure_type": "OPE",
+                       "value_euro": 500_000, "prep_time_days": days}, n_samples=1000)
+    bids.append(r["competition"]["mean"])
+    single_bid.append(r["single_bid_risk"]["probability"])
+
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=prep_days, y=bids, name="Expected bids",
+                         line=dict(color="#2E75B6")))
+fig.add_trace(go.Scatter(x=prep_days, y=single_bid, name="P(single bid)",
+                         line=dict(color="#C00000"), yaxis="y2"))
+fig.update_layout(
+    title="Effect of preparation time",
+    xaxis_title="Prep time (days)",
+    yaxis=dict(title="Expected bids"),
+    yaxis2=dict(title="P(single bid)", overlaying="y", side="right"),
+    legend=dict(x=0.7, y=0.95),
+)
+show(fig)
+""",
+
+    "Explore historical data": """\
+import plotly.express as px
+
+# df is a pandas DataFrame of all procedure records
+print("Columns:", list(df.columns))
+print("Shape:", df.shape)
+
+# Competition by country cluster
+agg = (df.groupby("country_cluster")["n_offers"]
+         .agg(["mean", "median", "count"])
+         .round(2)
+         .sort_values("mean", ascending=False))
+print(agg.to_string())
+
+fig = px.box(df[df["n_offers"].between(1,20)], x="country_cluster", y="n_offers",
+             title="Bid distribution by country cluster",
+             color="country_cluster")
+fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Number of bids")
+show(fig)
+""",
+
+    "Policy simulation": """\
+result = twin.policy_simulation(
+    segment_filters={"country_cluster": "CEE", "year_from": 2020, "year_to": 2023},
+    intervention={"param": "prep_time_days", "delta": 14},
+    n_records=200,
+    seed=42,
+)
+print("Segment matched:", result.get("n_simulated", "?"), "procedures")
+for outcome, stats in result.get("outcomes", {}).items():
+    mean_delta = stats.get("mean_delta", 0)
+    print(f"  {outcome:20s}  mean Δ = {mean_delta:+.4f}")
+""",
+}
+
+_EDITOR_STYLE = {
+    "fontFamily": "monospace",
+    "fontSize": "13px",
+    "lineHeight": "1.5",
+    "width": "100%",
+    "height": "340px",
+    "padding": "12px",
+    "border": "1px solid #C8D4E0",
+    "borderRadius": "6px",
+    "backgroundColor": "#FAFBFC",
+    "resize": "vertical",
+    "outline": "none",
+    "whiteSpace": "pre",
+    "overflowX": "auto",
+}
+
+
+def analysis_layout():
+    example_buttons = [
+        html.Button(
+            name,
+            id={"type": "analysis-example-btn", "index": i},
+            n_clicks=0,
+            style={
+                "margin": "0 6px 6px 0",
+                "padding": "5px 12px",
+                "fontSize": "12px",
+                "border": f"1px solid {COL_BLUE}",
+                "borderRadius": "4px",
+                "backgroundColor": "white",
+                "color": COL_BLUE,
+                "cursor": "pointer",
+            },
+        )
+        for i, name in enumerate(_ANALYSIS_EXAMPLES)
+    ]
+
+    return html.Div([
+        # ── Header ───────────────────────────────────────────────────
+        html.Div([
+            html.H3("🧪 Analysis Sandbox", style={"margin": "0 0 6px",
+                                                    "color": COL_NAVY}),
+            html.P([
+                "Write Python snippets against the procurement twin. Available: ",
+                html.Code("twin"), ", ",
+                html.Code("df"), " (1.1M procedure records), ",
+                html.Code("pd"), ", ",
+                html.Code("np"), ", ",
+                html.Code("go"), ", ",
+                html.Code("px"), ". ",
+                "Use ", html.Code("show(fig)"), " to render a plotly figure. ",
+                "Execution is sandboxed and limited to 30 seconds.",
+            ], style={"margin": 0, "fontSize": "13px", "color": "#555"}),
+        ], style={"backgroundColor": COL_CARD, "padding": "16px 20px",
+                  "borderRadius": "8px", "marginBottom": "12px",
+                  "boxShadow": "0 1px 4px rgba(0,0,0,0.08)"}),
+
+        # ── Main split ───────────────────────────────────────────────
+        html.Div([
+            # Left: editor
+            html.Div([
+                html.Div([
+                    html.Span("Examples: ", style={"fontSize": "12px",
+                                                    "color": COL_GREY,
+                                                    "marginRight": "4px"}),
+                    *example_buttons,
+                ], style={"marginBottom": "8px", "flexWrap": "wrap",
+                          "display": "flex", "alignItems": "center"}),
+
+                dcc.Textarea(
+                    id="analysis-code",
+                    value=list(_ANALYSIS_EXAMPLES.values())[0],
+                    style=_EDITOR_STYLE,
+                    spellCheck=False,
+                ),
+
+                html.Div([
+                    html.Button(
+                        "▶  Run",
+                        id="analysis-run-btn",
+                        n_clicks=0,
+                        style={
+                            "backgroundColor": COL_NAVY,
+                            "color": "white",
+                            "border": "none",
+                            "borderRadius": "6px",
+                            "padding": "9px 24px",
+                            "fontSize": "14px",
+                            "fontWeight": "600",
+                            "cursor": "pointer",
+                            "marginTop": "10px",
+                        },
+                    ),
+                    html.Span(id="analysis-status",
+                              style={"marginLeft": "14px", "fontSize": "12px",
+                                     "color": COL_GREY}),
+                ], style={"display": "flex", "alignItems": "center"}),
+
+                # Stored data (figure dicts) passed between callbacks
+                dcc.Store(id="analysis-result-store"),
+            ], style={"flex": "0 0 44%", "padding": "0 16px 0 0"}),
+
+            # Right: output
+            html.Div([
+                html.Div(id="analysis-output",
+                         style={"minHeight": "360px"}),
+            ], style={"flex": "1", "borderLeft": f"1px solid {COL_LIGHT}",
+                      "paddingLeft": "16px"}),
+        ], style={"display": "flex", "backgroundColor": COL_CARD,
+                  "padding": "16px 20px", "borderRadius": "8px",
+                  "boxShadow": "0 1px 4px rgba(0,0,0,0.08)"}),
+    ], style={"padding": "16px 24px"})
+
+
+@app.callback(
+    Output("analysis-code", "value"),
+    Input({"type": "analysis-example-btn", "index": dash.ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def load_example(n_clicks_list):
+    triggered = ctx.triggered_id
+    if not triggered:
+        raise dash.exceptions.PreventUpdate
+    idx = triggered["index"]
+    key = list(_ANALYSIS_EXAMPLES.keys())[idx]
+    return _ANALYSIS_EXAMPLES[key]
+
+
+@app.callback(
+    Output("analysis-result-store", "data"),
+    Output("analysis-status", "children"),
+    Input("analysis-run-btn", "n_clicks"),
+    State("analysis-code", "value"),
+    prevent_initial_call=True,
+)
+def execute_code(n_clicks, code):
+    if not code or not code.strip():
+        return dash.no_update, "Nothing to run."
+    result = _sandbox_run(code, twin, _SANDBOX_DF)
+    status = f"Ran in {result['elapsed_ms']} ms"
+    if result["error"]:
+        status += " · error"
+    return result, status
+
+
+@app.callback(
+    Output("analysis-output", "children"),
+    Input("analysis-result-store", "data"),
+    prevent_initial_call=True,
+)
+def render_output(result):
+    if not result:
+        return html.Div()
+
+    parts = []
+
+    # Error panel
+    if result.get("error"):
+        parts.append(html.Div([
+            html.Strong("Error", style={"color": COL_RED}),
+            html.Pre(result["error"],
+                     style={"margin": "6px 0 0", "fontSize": "12px",
+                            "whiteSpace": "pre-wrap", "color": "#8B0000"}),
+        ], style={"backgroundColor": "#FFF0F0", "border": f"1px solid {COL_RED}",
+                  "borderRadius": "6px", "padding": "10px 14px",
+                  "marginBottom": "12px"}))
+
+    # Stdout panel
+    stdout = result.get("stdout", "")
+    if stdout:
+        parts.append(html.Div([
+            html.Div("Output", style={"fontSize": "11px", "fontWeight": "600",
+                                       "color": COL_GREY, "marginBottom": "4px",
+                                       "textTransform": "uppercase",
+                                       "letterSpacing": "0.5px"}),
+            html.Pre(stdout,
+                     style={"margin": 0, "fontSize": "12px",
+                            "whiteSpace": "pre-wrap", "color": "#2C3E50",
+                            "maxHeight": "300px", "overflowY": "auto"}),
+        ], style={"backgroundColor": "#F6F8FA", "border": "1px solid #D0DAE6",
+                  "borderRadius": "6px", "padding": "10px 14px",
+                  "marginBottom": "12px"}))
+
+    # Plotly figures
+    for i, fig_dict in enumerate(result.get("figures", [])):
+        parts.append(dcc.Graph(
+            figure=fig_dict,
+            config={"displayModeBar": True, "scrollZoom": False},
+            style={"marginBottom": "12px"},
+            id=f"analysis-fig-{i}",
+        ))
+
+    if not parts:
+        parts.append(html.Div(
+            "No output. Use print() or show(fig) to display results.",
+            style={"color": COL_GREY, "fontSize": "13px",
+                   "fontStyle": "italic", "paddingTop": "20px"},
+        ))
+
+    return parts
 
 
 # ══════════════════════════════════════════════════════════════════
