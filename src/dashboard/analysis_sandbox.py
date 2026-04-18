@@ -2,10 +2,16 @@
 Sandboxed Python execution environment for the Analysis tab.
 
 Users write Python snippets against a restricted namespace:
-  twin   — ProcurementTwin instance (simulate, compare, empirical_benchmark, policy_simulation)
-  df     — pandas DataFrame of all procedure records (1.1M rows)
+  twin        — ProcurementTwin instance (simulate, compare, empirical_benchmark, ...)
+  df          — pandas DataFrame of all 1.1M procedure records
+  models      — dict of raw sklearn Pipelines: models["competition"]["model"].predict(row)
+  feature_spec  — dict of feature names used by each model
+  model_eval  — dict of test-set performance metrics per model
+  calibration — dict of CPV/country-cluster calibration offsets
+  shap_global — dict of pre-computed mean |SHAP| values per model
+  params_to_df(params) — build a model-ready DataFrame from a params dict
   pd, np, pl, go, px — pandas, numpy, polars, plotly
-  show(fig) — capture a plotly Figure for display in the output panel
+  show(fig)   — capture a plotly Figure for display in the output panel
 
 Dangerous builtins (import, open, exec, eval, compile, etc.) are blocked.
 Execution is time-limited to TIMEOUT_SECONDS.
@@ -49,15 +55,24 @@ _SAFE_BUILTINS = {
 }
 
 
-def run_code(code: str, twin, df: pd.DataFrame) -> dict:
+def run_code(code: str, twin, df: pd.DataFrame,
+             models: dict, metadata: dict) -> dict:
     """
     Execute `code` in a sandboxed namespace.
 
+    Parameters
+    ----------
+    code     : Python source string from the user
+    twin     : ProcurementTwin instance
+    df       : pandas DataFrame of all procedure records
+    models   : dict mapping model name → {"model": Pipeline, "meta": dict}
+    metadata : dict with keys feature_spec, model_eval, calibration, shap_global
+
     Returns a dict:
-      stdout   — captured print output (str, truncated to MAX_OUTPUT_CHARS)
-      figures  — list of plotly figure dicts (from calls to show())
-      error    — traceback string or None
-      elapsed_ms — wall-clock execution time
+      stdout     — captured print output (truncated to MAX_OUTPUT_CHARS)
+      figures    — list of plotly figure dicts (from calls to show())
+      error      — traceback string or None
+      elapsed_ms — wall-clock execution time in milliseconds
     """
     figures: list = []
     stdout_buf = io.StringIO()
@@ -71,9 +86,19 @@ def run_code(code: str, twin, df: pd.DataFrame) -> dict:
 
     sandbox_globals = {
         "__builtins__": _SAFE_BUILTINS,
-        # Domain objects
+        # High-level simulation API
         "twin": twin,
+        # Raw feature data
         "df": df,
+        # Raw model objects — each is {"model": sklearn Pipeline, "meta": dict}
+        "models": models,
+        # Model metadata dicts
+        "feature_spec": metadata.get("feature_spec", {}),
+        "model_eval":   metadata.get("model_eval", {}),
+        "calibration":  metadata.get("calibration", {}),
+        "shap_global":  metadata.get("shap_global", {}),
+        # Helper: build a model-ready DataFrame from a params dict
+        "params_to_df": lambda params: twin._params_to_df(params),
         # Libraries
         "pd": pd,
         "np": np,
