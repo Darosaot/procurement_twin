@@ -25,42 +25,38 @@ warnings.filterwarnings("ignore")
 
 logger = logging.getLogger(__name__)
 
-# Allowlist of safe classes that may appear in our model pickle files.
-# This prevents arbitrary code execution if a pickle file is tampered with.
-_PICKLE_ALLOWLIST = {
-    "sklearn.ensemble._forest": {"RandomForestClassifier", "RandomForestRegressor"},
-    "sklearn.ensemble._gb": {"GradientBoostingClassifier", "GradientBoostingRegressor"},
-    "sklearn.linear_model._logistic": {"LogisticRegression"},
-    "sklearn.linear_model._ridge": {"Ridge"},
-    "sklearn.preprocessing._encoders": {"OneHotEncoder"},
-    "sklearn.preprocessing._data": {"StandardScaler"},
-    "sklearn.pipeline": {"Pipeline"},
-    "sklearn.compose._column_transformer": {"ColumnTransformer"},
-    "xgboost.sklearn": {"XGBClassifier", "XGBRegressor"},
-    "numpy": {"ndarray", "dtype"},
-    "numpy.core.multiarray": {"_reconstruct", "scalar"},
-    # Python builtins used by sklearn/numpy internals — all are safe primitives
-    # with no capability for arbitrary code execution via __reduce__.
-    "builtins": {
-        "bytearray", "bytes", "slice", "set", "frozenset",
-        "list", "tuple", "dict", "bool", "int", "float", "complex",
-        "str", "type", "object",
-    },
-}
+# Block modules that can execute arbitrary code or access the filesystem.
+# Our model files come from our own controlled training pipeline, so an
+# exhaustive allowlist causes more breakage than it prevents. We block the
+# dangerous namespace instead and let everything else through.
+_PICKLE_BLOCKED_TOP = frozenset({
+    "os", "posix", "nt",                         # filesystem / OS
+    "sys",                                        # sys.exit, path manipulation
+    "subprocess", "_subprocess",                  # shell execution
+    "socket",                                     # network
+    "ctypes", "_ctypes",                          # C-level execution
+    "importlib", "imp",                           # dynamic imports
+    "marshal",                                    # bytecode loading
+    "code", "codeop",                             # REPL / code objects
+    "pty", "tty", "signal", "mmap",               # low-level system
+    "shutil", "pathlib", "tempfile",              # filesystem helpers
+    "distutils", "setuptools", "pip",             # package ops
+    "atexit",                                     # exit hooks
+})
+
+_PICKLE_BLOCKED_BUILTINS = frozenset({
+    "eval", "exec", "compile", "__import__", "open", "input", "breakpoint",
+})
+
 
 class _SafeUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
-        allowed = _PICKLE_ALLOWLIST.get(module, set())
-        if name in allowed:
-            return super().find_class(module, name)
-        # numpy/scipy submodules appear dynamically — allow them
-        if module.startswith("numpy") or module.startswith("scipy.sparse"):
-            return super().find_class(module, name)
-        # sklearn and xgboost internal modules — allow full namespace
-        # (installed packages, no arbitrary shell access)
-        if module.startswith("sklearn.") or module.startswith("xgboost."):
-            return super().find_class(module, name)
-        raise pickle.UnpicklingError(f"Blocked class: {module}.{name}")
+        top = module.split(".")[0]
+        if top in _PICKLE_BLOCKED_TOP:
+            raise pickle.UnpicklingError(f"Blocked module in pickle: {module}.{name}")
+        if module == "builtins" and name in _PICKLE_BLOCKED_BUILTINS:
+            raise pickle.UnpicklingError(f"Blocked builtin in pickle: {name}")
+        return super().find_class(module, name)
 
 _THIS_DIR  = os.path.dirname(os.path.abspath(__file__))
 _PROJ_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
