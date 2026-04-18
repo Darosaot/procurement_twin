@@ -1842,8 +1842,7 @@ for outcome, d in comp["deltas"].items():
 """,
 
     "Sweep prep time": """\
-import plotly.graph_objects as go
-
+# go, px, pd, np are pre-loaded — no imports needed
 prep_days = list(range(15, 91, 5))
 bids, single_bid = [], []
 
@@ -1869,9 +1868,8 @@ show(fig)
 """,
 
     "Explore historical data": """\
-import plotly.express as px
-
 # df is a pandas DataFrame of all procedure records
+# px, go, pd, np are pre-loaded — no imports needed
 print("Columns:", list(df.columns))
 print("Shape:", df.shape)
 
