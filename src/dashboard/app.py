@@ -50,6 +50,21 @@ except Exception as _e:
     logger.warning("Could not load feature store for sandbox: %s", _e)
     _SANDBOX_DF = pd.DataFrame()
 
+# ── Build sandbox model + metadata dicts (reuse already-loaded twin state) ──
+_SANDBOX_MODELS = {
+    "competition":  twin.competition_mdl,
+    "single_bid":   twin.singlebid_mdl,
+    "cross_border": twin.crossborder_mdl,
+    "price":        twin.price_mdl,
+    "duration":     twin.duration_mdl,
+}
+_SANDBOX_META = {
+    "feature_spec": twin.feature_spec,
+    "model_eval":   twin._load_json("model_evaluation.json"),
+    "calibration":  twin._load_json("calibration_offsets.json"),
+    "shap_global":  twin._shap_global,
+}
+
 # ── Reference lists ───────────────────────────────────────────────
 COUNTRIES = sorted(["AT","BE","BG","CY","CZ","DE","DK","EE","ES","FI","FR","GR",
                      "HR","HU","IE","IT","LT","LU","LV","MT","NL","PL","PT","RO",
@@ -1886,6 +1901,65 @@ for outcome, stats in result.get("outcomes", {}).items():
     mean_delta = stats.get("mean_delta", 0)
     print(f"  {outcome:20s}  mean Δ = {mean_delta:+.4f}")
 """,
+
+    "Model performance": """\
+# model_eval contains test-set metrics for all 5 trained models
+for name, metrics in model_eval.items():
+    print(f"\\n{name.upper()}")
+    for k, v in metrics.items():
+        if isinstance(v, float):
+            print(f"  {k}: {v:.4f}")
+        else:
+            print(f"  {k}: {v}")
+""",
+
+    "Direct prediction": """\
+# params_to_df converts a params dict into a model-ready DataFrame
+# models["x"]["model"] is the raw sklearn Pipeline — call .predict() directly
+row = params_to_df({
+    "country": "DE", "procedure_type": "OPE",
+    "contract_type": "S", "cpv_division": "72",
+    "criteria": "M", "value_euro": 500_000,
+    "prep_time_days": 35,
+})
+print("Feature columns:", list(row.columns))
+
+# Competition model predicts log10(1 + n_offers)
+comp_raw = models["competition"]["model"].predict(row)[0]
+print(f"\\nCompetition model raw output (log scale): {comp_raw:.4f}")
+print(f"Back-transformed expected bids: {10**comp_raw - 1:.2f}")
+
+# Single-bid model predicts P(only 1 bid)
+prob_single = models["single_bid"]["model"].predict_proba(row)[0][1]
+print(f"\\nSingle-bid risk: {prob_single:.3f}")
+
+# Cross-border model
+prob_cb = models["cross_border"]["model"].predict_proba(row)[0][1]
+print(f"Cross-border probability: {prob_cb:.3f}")
+""",
+
+    "Feature importances": """\
+# shap_global contains pre-computed mean |SHAP| values for each model
+# Plot the top 20 features driving competition predictions
+shap = shap_global["competition"]
+top = sorted(shap.items(), key=lambda x: -x[1])[:20]
+features, scores = zip(*top)
+
+fig = go.Figure(go.Bar(
+    x=list(scores), y=list(features),
+    orientation="h", marker_color="#2E75B6",
+))
+fig.update_layout(
+    title="Top 20 features — competition model (mean |SHAP|)",
+    yaxis=dict(autorange="reversed"),
+    xaxis_title="Mean |SHAP| value",
+    height=520,
+)
+show(fig)
+
+# Also available: shap_global["single_bid"], ["cross_border"], ["price"], ["duration"]
+print("Models with SHAP data:", list(shap_global.keys()))
+""",
 }
 
 _EDITOR_STYLE = {
@@ -1931,9 +2005,15 @@ def analysis_layout():
             html.H3("🧪 Analysis Sandbox", style={"margin": "0 0 6px",
                                                     "color": COL_NAVY}),
             html.P([
-                "Write Python snippets against the procurement twin. Available: ",
-                html.Code("twin"), ", ",
+                "Write Python snippets against the procurement twin. Available variables: ",
+                html.Code("twin"), " (simulation API), ",
                 html.Code("df"), " (1.1M procedure records), ",
+                html.Code("models"), " (5 raw sklearn pipelines), ",
+                html.Code("feature_spec"), ", ",
+                html.Code("model_eval"), ", ",
+                html.Code("calibration"), ", ",
+                html.Code("shap_global"), ", ",
+                html.Code("params_to_df(params)"), ", ",
                 html.Code("pd"), ", ",
                 html.Code("np"), ", ",
                 html.Code("go"), ", ",
@@ -2026,7 +2106,7 @@ def load_example(n_clicks_list):
 def execute_code(n_clicks, code):
     if not code or not code.strip():
         return dash.no_update, "Nothing to run."
-    result = _sandbox_run(code, twin, _SANDBOX_DF)
+    result = _sandbox_run(code, twin, _SANDBOX_DF, _SANDBOX_MODELS, _SANDBOX_META)
     status = f"Ran in {result['elapsed_ms']} ms"
     if result["error"]:
         status += " · error"
