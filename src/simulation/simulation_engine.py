@@ -19,9 +19,38 @@ Changes in v2:
 
 import numpy as np
 import pandas as pd
-import pickle, json, os
+import pickle, json, os, io, logging
 import warnings
 warnings.filterwarnings("ignore")
+
+logger = logging.getLogger(__name__)
+
+# Allowlist of safe classes that may appear in our model pickle files.
+# This prevents arbitrary code execution if a pickle file is tampered with.
+_PICKLE_ALLOWLIST = {
+    "sklearn.ensemble._forest": {"RandomForestClassifier", "RandomForestRegressor"},
+    "sklearn.ensemble._gb": {"GradientBoostingClassifier", "GradientBoostingRegressor"},
+    "sklearn.linear_model._logistic": {"LogisticRegression"},
+    "sklearn.linear_model._ridge": {"Ridge"},
+    "sklearn.preprocessing._encoders": {"OneHotEncoder"},
+    "sklearn.preprocessing._data": {"StandardScaler"},
+    "sklearn.pipeline": {"Pipeline"},
+    "sklearn.compose._column_transformer": {"ColumnTransformer"},
+    "xgboost.sklearn": {"XGBClassifier", "XGBRegressor"},
+    "numpy": {"ndarray", "dtype"},
+    "numpy.core.multiarray": {"_reconstruct", "scalar"},
+    "builtins": {"bytearray", "bytes"},
+}
+
+class _SafeUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        allowed = _PICKLE_ALLOWLIST.get(module, set())
+        if name in allowed:
+            return super().find_class(module, name)
+        # numpy submodules often appear dynamically — allow them
+        if module.startswith("numpy") or module.startswith("scipy.sparse"):
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(f"Blocked class: {module}.{name}")
 
 _THIS_DIR  = os.path.dirname(os.path.abspath(__file__))
 _PROJ_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
@@ -96,7 +125,7 @@ class ProcurementTwin:
     """
 
     def __init__(self):
-        print("Loading models...")
+        logger.info("Loading models...")
         self.competition_mdl = self._load("competition_model")
         self.singlebid_mdl   = self._load("single_bid_model")
         self.crossborder_mdl = self._load("crossborder_model")
@@ -124,11 +153,16 @@ class ProcurementTwin:
         except FileNotFoundError:
             self._shap_global = {}
 
-        print("  All models loaded.")
+        logger.info("All models loaded.")
 
     def _load(self, name):
-        with open(f"{MODEL_DIR}/{name}.pkl", "rb") as f:
-            return pickle.load(f)
+        path = f"{MODEL_DIR}/{name}.pkl"
+        with open(path, "rb") as f:
+            try:
+                return _SafeUnpickler(f).load()
+            except pickle.UnpicklingError as e:
+                logger.error("Blocked unsafe pickle in %s: %s", path, e)
+                raise
 
     def _load_json(self, name):
         with open(f"{MODEL_DIR}/{name}", "r") as f:
@@ -277,7 +311,7 @@ class ProcurementTwin:
             b = sim_b[key][subkey]
             return {"a": round(a, 3), "b": round(b, 3),
                     "delta": round(b - a, 3),
-                    "delta_pct": round((b - a) / abs(a) * 100, 1) if a != 0 else None}
+                    "delta_pct": round((b - a) / abs(a) * 100, 1) if a != 0 else (0.0 if b == 0 else None)}
 
         return {
             "label_a": label_a, "label_b": label_b,

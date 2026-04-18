@@ -59,9 +59,7 @@ services:
         --ip=0.0.0.0
         --port=8888
         --no-browser
-        --allow-root
-        --ServerApp.token=''
-        --ServerApp.password=''
+        --ServerApp.token=${JUPYTER_TOKEN:-procurement-twin}
         --ServerApp.root_dir=/app/notebooks
     ports:
       - "8888:8888"         # Jupyter → http://localhost:8888
@@ -73,6 +71,8 @@ services:
       - PYTHONUNBUFFERED=1
       # Notebooks resolve the API via the Docker service name, not localhost
       - TWIN_API_BASE=http://api:8000
+      # Override with: JUPYTER_TOKEN=mysecret docker compose up
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-procurement-twin}
     depends_on:
       - api
     restart: unless-stopped
