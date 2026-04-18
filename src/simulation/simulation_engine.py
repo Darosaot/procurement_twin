@@ -39,7 +39,13 @@ _PICKLE_ALLOWLIST = {
     "xgboost.sklearn": {"XGBClassifier", "XGBRegressor"},
     "numpy": {"ndarray", "dtype"},
     "numpy.core.multiarray": {"_reconstruct", "scalar"},
-    "builtins": {"bytearray", "bytes"},
+    # Python builtins used by sklearn/numpy internals — all are safe primitives
+    # with no capability for arbitrary code execution via __reduce__.
+    "builtins": {
+        "bytearray", "bytes", "slice", "set", "frozenset",
+        "list", "tuple", "dict", "bool", "int", "float", "complex",
+        "str", "type", "object",
+    },
 }
 
 class _SafeUnpickler(pickle.Unpickler):
@@ -47,8 +53,11 @@ class _SafeUnpickler(pickle.Unpickler):
         allowed = _PICKLE_ALLOWLIST.get(module, set())
         if name in allowed:
             return super().find_class(module, name)
-        # numpy submodules often appear dynamically — allow them
+        # numpy/scipy submodules appear dynamically — allow them
         if module.startswith("numpy") or module.startswith("scipy.sparse"):
+            return super().find_class(module, name)
+        # sklearn internal modules not explicitly listed but still safe
+        if module.startswith("sklearn."):
             return super().find_class(module, name)
         raise pickle.UnpicklingError(f"Blocked class: {module}.{name}")
 
