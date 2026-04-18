@@ -120,6 +120,8 @@ def _bootstrap_ci(deltas: np.ndarray, n_boot: int = 1000,
     if rng is None:
         rng = np.random.default_rng(0)
     n = len(deltas)
+    if n == 0:
+        return np.zeros(n_boot)
     idx = rng.integers(0, n, size=(n_boot, n))   # (n_boot, n) index matrix
     return deltas[idx].mean(axis=1)               # (n_boot,) bootstrap means
 
