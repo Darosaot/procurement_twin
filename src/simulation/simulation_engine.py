@@ -56,8 +56,9 @@ class _SafeUnpickler(pickle.Unpickler):
         # numpy/scipy submodules appear dynamically — allow them
         if module.startswith("numpy") or module.startswith("scipy.sparse"):
             return super().find_class(module, name)
-        # sklearn internal modules not explicitly listed but still safe
-        if module.startswith("sklearn."):
+        # sklearn and xgboost internal modules — allow full namespace
+        # (installed packages, no arbitrary shell access)
+        if module.startswith("sklearn.") or module.startswith("xgboost."):
             return super().find_class(module, name)
         raise pickle.UnpicklingError(f"Blocked class: {module}.{name}")
 
