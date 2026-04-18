@@ -1980,6 +1980,111 @@ _EDITOR_STYLE = {
 
 
 def analysis_layout():
+
+    def _ref_row(code, desc):
+        return html.Tr([
+            html.Td(html.Code(code, style={"fontSize": "11.5px",
+                                           "backgroundColor": "#EEF2F7",
+                                           "padding": "2px 5px",
+                                           "borderRadius": "3px",
+                                           "whiteSpace": "nowrap"}),
+                    style={"padding": "5px 12px 5px 0", "verticalAlign": "top",
+                           "width": "42%"}),
+            html.Td(desc, style={"padding": "5px 0", "fontSize": "12px",
+                                 "color": "#444", "verticalAlign": "top"}),
+        ])
+
+    reference_panel = html.Details([
+        html.Summary("📚  What's available in the sandbox  —  click to expand",
+                     style={"fontSize": "13px", "fontWeight": "600",
+                            "color": COL_NAVY, "cursor": "pointer",
+                            "padding": "10px 0", "userSelect": "none"}),
+
+        html.Div([
+            # ── Simulation API ────────────────────────────────────────
+            html.P("Simulation API", style={"fontWeight": "700", "color": COL_NAVY,
+                                             "margin": "12px 0 4px",
+                                             "fontSize": "12px",
+                                             "textTransform": "uppercase",
+                                             "letterSpacing": "0.5px"}),
+            html.Table([
+                _ref_row("twin.simulate(params, n_samples=5000)",
+                         "Run Monte Carlo simulation → distributions for competition, price, duration, etc."),
+                _ref_row("twin.compare(params_a, params_b)",
+                         "Side-by-side comparison of two procedure designs → per-outcome deltas"),
+                _ref_row("twin.empirical_benchmark(country=, cpv_division=, ...)",
+                         "Historical statistics from 1.1M TED records matching your filters"),
+                _ref_row("twin.policy_simulation(segment_filters, intervention)",
+                         "Aggregate counterfactual: what if a policy change were applied across a segment?"),
+                _ref_row("twin.compute_shap(params)",
+                         "Per-prediction SHAP feature contributions for a single procedure"),
+            ], style={"width": "100%", "borderCollapse": "collapse"}),
+
+            # ── Raw models ────────────────────────────────────────────
+            html.P("Raw sklearn Pipelines  (each is a dict: {\"model\": Pipeline, \"meta\": {...}})",
+                   style={"fontWeight": "700", "color": COL_NAVY,
+                          "margin": "14px 0 4px", "fontSize": "12px",
+                          "textTransform": "uppercase", "letterSpacing": "0.5px"}),
+            html.Table([
+                _ref_row("models[\"competition\"][\"model\"].predict(row)",
+                         "XGBoost — predicts log₁₀(1 + n_offers); back-transform: 10^x − 1"),
+                _ref_row("models[\"single_bid\"][\"model\"].predict_proba(row)[:,1]",
+                         "Random Forest — P(only 1 bid received)"),
+                _ref_row("models[\"cross_border\"][\"model\"].predict_proba(row)[:,1]",
+                         "Random Forest — P(winner from a different EU country)"),
+                _ref_row("models[\"price\"][\"model\"].predict(row)",
+                         "Ridge (IV) — price ratio (award value ÷ estimate); uses competition_hat"),
+                _ref_row("models[\"duration\"][\"model\"].predict(row)",
+                         "Gradient Boosting — procedure duration in days"),
+                _ref_row("models[x][\"model\"][\"pre\"].get_feature_names_out()",
+                         "Encoded feature names after preprocessing (e.g. 'cat__ISO_COUNTRY_CODE_DE')"),
+            ], style={"width": "100%", "borderCollapse": "collapse"}),
+
+            # ── Data ──────────────────────────────────────────────────
+            html.P("Data & Metadata",
+                   style={"fontWeight": "700", "color": COL_NAVY,
+                          "margin": "14px 0 4px", "fontSize": "12px",
+                          "textTransform": "uppercase", "letterSpacing": "0.5px"}),
+            html.Table([
+                _ref_row("df",
+                         "pandas DataFrame — 1.1M TED procedures 2018–2023. "
+                         "Key columns: ISO_COUNTRY_CODE, TOP_TYPE, TYPE_OF_CONTRACT, "
+                         "cpv_division, CRIT_CODE, value_bracket, country_cluster, "
+                         "log10_value, prep_time_days, n_offers, price_ratio, "
+                         "cross_border_win, single_bid_flag, contract_duration_months"),
+                _ref_row("params_to_df(params_dict)",
+                         "Convert a params dict to a model-ready DataFrame "
+                         "(same keys as twin.simulate: country, procedure_type, value_euro, …)"),
+                _ref_row("feature_spec",
+                         "dict — cat_features, num_features, num_features_price lists "
+                         f"({', '.join(['ISO_COUNTRY_CODE','TOP_TYPE','cpv_division','…'])})"),
+                _ref_row("model_eval",
+                         "dict — test-set metrics per model (AUC, MAE, R², baseline comparisons)"),
+                _ref_row("calibration",
+                         "dict — by_cpv and by_cluster calibration offsets "
+                         "for competition and price_ratio models"),
+                _ref_row("shap_global",
+                         "dict — pre-computed mean |SHAP| importances per model "
+                         "(keys: competition, single_bid, cross_border, price, duration)"),
+            ], style={"width": "100%", "borderCollapse": "collapse"}),
+
+            # ── Libraries ─────────────────────────────────────────────
+            html.P("Libraries & Output",
+                   style={"fontWeight": "700", "color": COL_NAVY,
+                          "margin": "14px 0 4px", "fontSize": "12px",
+                          "textTransform": "uppercase", "letterSpacing": "0.5px"}),
+            html.Table([
+                _ref_row("pd, np, pl", "pandas, numpy, polars"),
+                _ref_row("go, px", "plotly.graph_objects, plotly.express"),
+                _ref_row("show(fig)", "Render a plotly Figure in the output panel"),
+                _ref_row("print(...)", "Print text to the output panel"),
+            ], style={"width": "100%", "borderCollapse": "collapse"}),
+
+        ], style={"padding": "0 4px 8px"}),
+    ], style={"backgroundColor": COL_CARD, "padding": "0 20px 12px",
+              "borderRadius": "8px", "marginBottom": "12px",
+              "boxShadow": "0 1px 4px rgba(0,0,0,0.08)"})
+
     example_buttons = [
         html.Button(
             name,
@@ -1987,8 +2092,8 @@ def analysis_layout():
             n_clicks=0,
             style={
                 "margin": "0 6px 6px 0",
-                "padding": "5px 12px",
-                "fontSize": "12px",
+                "padding": "4px 11px",
+                "fontSize": "11.5px",
                 "border": f"1px solid {COL_BLUE}",
                 "borderRadius": "4px",
                 "backgroundColor": "white",
@@ -1999,83 +2104,121 @@ def analysis_layout():
         for i, name in enumerate(_ANALYSIS_EXAMPLES)
     ]
 
+    editor_panel = html.Div([
+        # ── Examples row ─────────────────────────────────────────────
+        html.Div([
+            html.Span("Load example: ",
+                      style={"fontSize": "12px", "color": COL_GREY,
+                             "marginRight": "4px", "whiteSpace": "nowrap"}),
+            html.Div(example_buttons,
+                     style={"display": "flex", "flexWrap": "wrap"}),
+        ], style={"display": "flex", "alignItems": "flex-start",
+                  "marginBottom": "10px", "flexWrap": "wrap", "gap": "4px"}),
+
+        # ── Code editor with IDE-style header bar ─────────────────────
+        html.Div([
+            html.Div([
+                html.Span("Python",
+                          style={"color": "#A8C4E0", "fontSize": "12px",
+                                 "fontWeight": "700", "letterSpacing": "0.5px"}),
+                html.Span("print() for text  ·  show(fig) for charts",
+                          style={"color": "#5A7A96", "fontSize": "11px"}),
+            ], style={"backgroundColor": "#1F3864",
+                      "padding": "7px 14px",
+                      "borderRadius": "6px 6px 0 0",
+                      "display": "flex",
+                      "justifyContent": "space-between",
+                      "alignItems": "center"}),
+            dcc.Textarea(
+                id="analysis-code",
+                value=list(_ANALYSIS_EXAMPLES.values())[0],
+                placeholder="# Write your Python code here…",
+                style={
+                    "fontFamily": "'Fira Code', 'Cascadia Code', 'Consolas', monospace",
+                    "fontSize": "13px",
+                    "lineHeight": "1.55",
+                    "width": "100%",
+                    "height": "400px",
+                    "padding": "14px",
+                    "border": "none",
+                    "borderRadius": "0 0 6px 6px",
+                    "backgroundColor": "#F7F9FC",
+                    "resize": "vertical",
+                    "outline": "none",
+                    "whiteSpace": "pre",
+                    "overflowX": "auto",
+                    "boxSizing": "border-box",
+                },
+                spellCheck=False,
+            ),
+        ], style={"border": f"2px solid {COL_NAVY}",
+                  "borderRadius": "6px",
+                  "overflow": "hidden",
+                  "marginBottom": "10px"}),
+
+        # ── Run button ───────────────────────────────────────────────
+        html.Div([
+            html.Button(
+                "▶  Run",
+                id="analysis-run-btn",
+                n_clicks=0,
+                style={
+                    "backgroundColor": COL_NAVY,
+                    "color": "white",
+                    "border": "none",
+                    "borderRadius": "6px",
+                    "padding": "9px 28px",
+                    "fontSize": "14px",
+                    "fontWeight": "700",
+                    "cursor": "pointer",
+                    "letterSpacing": "0.3px",
+                },
+            ),
+            html.Span(id="analysis-status",
+                      style={"marginLeft": "14px", "fontSize": "12px",
+                             "color": COL_GREY}),
+        ], style={"display": "flex", "alignItems": "center"}),
+
+        dcc.Store(id="analysis-result-store"),
+    ])
+
+    output_panel = html.Div([
+        html.Div("Output",
+                 style={"fontSize": "11px", "fontWeight": "700",
+                        "color": COL_GREY, "letterSpacing": "0.8px",
+                        "textTransform": "uppercase", "marginBottom": "10px",
+                        "paddingBottom": "6px",
+                        "borderBottom": f"1px solid {COL_LIGHT}"}),
+        dcc.Loading(
+            html.Div(id="analysis-output", style={"minHeight": "360px"}),
+            type="circle", color=COL_BLUE,
+        ),
+    ])
+
     return html.Div([
         # ── Header ───────────────────────────────────────────────────
         html.Div([
-            html.H3("🧪 Analysis Sandbox", style={"margin": "0 0 6px",
-                                                    "color": COL_NAVY}),
-            html.P([
-                "Write Python snippets against the procurement twin. Available variables: ",
-                html.Code("twin"), " (simulation API), ",
-                html.Code("df"), " (1.1M procedure records), ",
-                html.Code("models"), " (5 raw sklearn pipelines), ",
-                html.Code("feature_spec"), ", ",
-                html.Code("model_eval"), ", ",
-                html.Code("calibration"), ", ",
-                html.Code("shap_global"), ", ",
-                html.Code("params_to_df(params)"), ", ",
-                html.Code("pd"), ", ",
-                html.Code("np"), ", ",
-                html.Code("go"), ", ",
-                html.Code("px"), ". ",
-                "Use ", html.Code("show(fig)"), " to render a plotly figure. ",
-                "Execution is sandboxed and limited to 30 seconds.",
-            ], style={"margin": 0, "fontSize": "13px", "color": "#555"}),
-        ], style={"backgroundColor": COL_CARD, "padding": "16px 20px",
-                  "borderRadius": "8px", "marginBottom": "12px",
+            html.H3("🧪 Analysis Sandbox",
+                    style={"margin": "0 0 4px", "color": COL_NAVY}),
+            html.P("Write Python against the procurement twin's models and data. "
+                   "Results render inline — text via print(), charts via show(fig). "
+                   "Execution is sandboxed and limited to 30 s.",
+                   style={"margin": 0, "fontSize": "13px", "color": "#555"}),
+        ], style={"backgroundColor": COL_CARD, "padding": "14px 20px",
+                  "borderRadius": "8px", "marginBottom": "10px",
                   "boxShadow": "0 1px 4px rgba(0,0,0,0.08)"}),
 
-        # ── Main split ───────────────────────────────────────────────
+        # ── Reference guide (collapsible) ─────────────────────────────
+        reference_panel,
+
+        # ── Editor + Output ───────────────────────────────────────────
         html.Div([
-            # Left: editor
-            html.Div([
-                html.Div([
-                    html.Span("Examples: ", style={"fontSize": "12px",
-                                                    "color": COL_GREY,
-                                                    "marginRight": "4px"}),
-                    *example_buttons,
-                ], style={"marginBottom": "8px", "flexWrap": "wrap",
-                          "display": "flex", "alignItems": "center"}),
-
-                dcc.Textarea(
-                    id="analysis-code",
-                    value=list(_ANALYSIS_EXAMPLES.values())[0],
-                    style=_EDITOR_STYLE,
-                    spellCheck=False,
-                ),
-
-                html.Div([
-                    html.Button(
-                        "▶  Run",
-                        id="analysis-run-btn",
-                        n_clicks=0,
-                        style={
-                            "backgroundColor": COL_NAVY,
-                            "color": "white",
-                            "border": "none",
-                            "borderRadius": "6px",
-                            "padding": "9px 24px",
-                            "fontSize": "14px",
-                            "fontWeight": "600",
-                            "cursor": "pointer",
-                            "marginTop": "10px",
-                        },
-                    ),
-                    html.Span(id="analysis-status",
-                              style={"marginLeft": "14px", "fontSize": "12px",
-                                     "color": COL_GREY}),
-                ], style={"display": "flex", "alignItems": "center"}),
-
-                # Stored data (figure dicts) passed between callbacks
-                dcc.Store(id="analysis-result-store"),
-            ], style={"flex": "0 0 44%", "padding": "0 16px 0 0"}),
-
-            # Right: output
-            html.Div([
-                html.Div(id="analysis-output",
-                         style={"minHeight": "360px"}),
-            ], style={"flex": "1", "borderLeft": f"1px solid {COL_LIGHT}",
-                      "paddingLeft": "16px"}),
+            html.Div(editor_panel,
+                     style={"flex": "0 0 47%", "padding": "0 18px 0 0",
+                            "minWidth": 0}),
+            html.Div(output_panel,
+                     style={"flex": "1", "borderLeft": f"2px solid {COL_LIGHT}",
+                            "paddingLeft": "18px", "minWidth": 0}),
         ], style={"display": "flex", "backgroundColor": COL_CARD,
                   "padding": "16px 20px", "borderRadius": "8px",
                   "boxShadow": "0 1px 4px rgba(0,0,0,0.08)"}),
