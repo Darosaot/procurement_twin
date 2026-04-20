@@ -38,6 +38,15 @@ from simulation.simulation_engine import (
 )
 from dashboard.analysis_sandbox import run_code as _sandbox_run
 
+try:
+    from advisor.advisor import ProcurementAdvisor as _ProcurementAdvisor
+    _advisor = _ProcurementAdvisor()
+    _ADVISOR_AVAILABLE = True
+except Exception as _adv_err:
+    _advisor = None
+    _ADVISOR_AVAILABLE = False
+    logger.warning("Advisor module unavailable: %s", _adv_err)
+
 # ── Initialise twin ───────────────────────────────────────────────
 twin = ProcurementTwin()
 
@@ -388,6 +397,9 @@ app.layout = html.Div([
         dcc.Tab(label="💡  Explain",               value="tab-explain"),
         dcc.Tab(label="📖  Methodology",           value="tab-methodology"),
         dcc.Tab(label="🧪  Analysis",              value="tab-analysis"),
+        dcc.Tab(label="🏆  Optimisation Lab",      value="tab-optimise"),
+        dcc.Tab(label="🧠  AI Advisor",            value="tab-advisor"),
+        dcc.Tab(label="📊  Risk Radar",            value="tab-radar"),
     ]),
 
     html.Div(id="tab-content", style={"minHeight":"600px"}),
@@ -403,7 +415,10 @@ def render_tab(tab):
     if tab == "tab-policy":      return policy_layout()
     if tab == "tab-explain":     return explain_layout()
     if tab == "tab-methodology": return methodology_layout()
-    if tab == "tab-analysis":   return analysis_layout()
+    if tab == "tab-analysis":    return analysis_layout()
+    if tab == "tab-optimise":    return optimise_layout()
+    if tab == "tab-advisor":     return advisor_layout()
+    if tab == "tab-radar":       return radar_layout()
     return html.Div("Unknown tab")
 
 
@@ -2324,6 +2339,443 @@ def render_output(result):
         ))
 
     return parts
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB 8: OPTIMISATION LAB
+# ══════════════════════════════════════════════════════════════════
+def optimise_layout():
+    def _weight_slider(id_suffix, label, default, description):
+        return html.Div([
+            html.Div([
+                html.Span(label, style={"fontWeight":"600","fontSize":"13px","color":COL_NAVY}),
+                html.Span(description, style={"fontSize":"11px","color":COL_GREY,"marginLeft":"8px"}),
+            ], style={"marginBottom":"4px"}),
+            dcc.Slider(id=f"opt-w-{id_suffix}", min=-1, max=1, step=0.1,
+                       value=default,
+                       marks={-1:"−1",0:"0",1:"+1"},
+                       tooltip={"placement":"bottom","always_visible":True}),
+        ], style={"marginBottom":"16px"})
+
+    left = html.Div([
+        html.H3("Context Parameters", style={"color":COL_NAVY,"fontSize":"14px","fontWeight":"700","margin":"0 0 12px 0","borderBottom":f"2px solid {COL_LIGHT}","paddingBottom":"6px"}),
+        _form_row("Country", dcc.Dropdown(id="opt-country", options=[{"label":c,"value":c} for c in COUNTRIES], value="DE", clearable=False)),
+        _form_row("Contract type", dcc.RadioItems(id="opt-ctype", options=CONTRACT_OPTIONS, value="S", inline=True, className="radio-inline")),
+        _form_row("CPV sector", dcc.Dropdown(id="opt-cpv", options=CPV_OPTIONS, value="72", clearable=False)),
+        _form_row("Estimated value (€)", dcc.Input(id="opt-val", type="number", value=1_000_000, min=10_000, step=10_000, style={"width":"100%","padding":"6px","border":"1px solid #CCC","borderRadius":"4px","fontSize":"13px"})),
+        _form_row("Contract duration (months)", dcc.Slider(id="opt-dur", min=3, max=60, step=3, value=24, marks={3:"3m",12:"1yr",24:"2yr",36:"3yr",60:"5yr"}, tooltip={"placement":"bottom","always_visible":True})),
+
+        html.H3("Objective Weights", style={"color":COL_NAVY,"fontSize":"14px","fontWeight":"700","margin":"18px 0 12px 0","borderBottom":f"2px solid {COL_LIGHT}","paddingBottom":"6px"}),
+        html.P("Set weights: +1 = maximise, −1 = minimise, 0 = ignore.", style={"fontSize":"11px","color":COL_GREY,"margin":"0 0 12px 0"}),
+        _weight_slider("competition", "Competition (bids)", 0.4, "want more bids"),
+        _weight_slider("singlebid", "Single-bid risk", -0.4, "want lower risk"),
+        _weight_slider("crossborder", "Cross-border", 0.1, "want higher participation"),
+        _weight_slider("price", "Price ratio", -0.1, "want cheaper awards"),
+        _weight_slider("duration", "Duration", -0.1, "want faster procedures"),
+
+        html.H3("Constraints", style={"color":COL_NAVY,"fontSize":"14px","fontWeight":"700","margin":"18px 0 12px 0","borderBottom":f"2px solid {COL_LIGHT}","paddingBottom":"6px"}),
+        _form_row("Allowed procedure types", dcc.Checklist(id="opt-procs",
+            options=[{"label":f" {v}","value":k} for k,v in {"OPE":"Open","RES":"Restricted","NIC":"Negotiated","COD":"Competitive dialogue"}.items()],
+            value=["OPE","RES","NIC","COD"], className="checklist")),
+        _form_row("Min prep time (days)", dcc.Slider(id="opt-minprep", min=14, max=60, step=1, value=21, marks={14:"14",35:"35",52:"52"}, tooltip={"placement":"bottom","always_visible":True})),
+        _form_row("Max prep time (days)", dcc.Slider(id="opt-maxprep", min=35, max=90, step=1, value=90, marks={35:"35",65:"65",90:"90"}, tooltip={"placement":"bottom","always_visible":True})),
+        _form_row("MEAT only?", dcc.Checklist(id="opt-meatonly", options=[{"label":" Force MEAT award criteria","value":"meat"}], value=[])),
+
+        html.Button("🏆  Find Optimal Design", id="opt-btn", n_clicks=0, className="btn-primary"),
+        html.Div(id="opt-status", style={"fontSize":"12px","color":COL_BLUE,"marginTop":"10px","fontStyle":"italic"}),
+    ], style={"width":"320px","flexShrink":"0","backgroundColor":COL_CARD,"borderRadius":"10px","padding":"20px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","overflowY":"auto","maxHeight":"85vh"})
+
+    right = html.Div([
+        html.Div(id="opt-results", children=[
+            html.Div([
+                html.Div("🏆", style={"fontSize":"48px","marginBottom":"12px"}),
+                html.H3("Multi-Objective Optimisation Engine", style={"color":COL_NAVY,"margin":"0 0 8px 0"}),
+                html.P("Set your objective weights and click 'Find Optimal Design' to discover the best procedure configuration for your priorities.", style={"color":COL_GREY,"maxWidth":"400px","margin":"0 auto"}),
+            ], style={"textAlign":"center","padding":"60px 20px","color":COL_GREY}),
+        ]),
+    ], style={"flex":"1","overflowY":"auto","maxHeight":"85vh","paddingLeft":"20px"})
+
+    return html.Div([left, right],
+                    style={"display":"flex","gap":"0","padding":"20px","alignItems":"flex-start","minHeight":"80vh"})
+
+
+@app.callback(
+    Output("opt-results","children"),
+    Output("opt-status","children"),
+    Input("opt-btn","n_clicks"),
+    State("opt-country","value"), State("opt-ctype","value"),
+    State("opt-cpv","value"), State("opt-val","value"), State("opt-dur","value"),
+    State("opt-w-competition","value"), State("opt-w-singlebid","value"),
+    State("opt-w-crossborder","value"), State("opt-w-price","value"), State("opt-w-duration","value"),
+    State("opt-procs","value"), State("opt-minprep","value"), State("opt-maxprep","value"),
+    State("opt-meatonly","value"),
+    prevent_initial_call=True,
+)
+def run_optimise(n_clicks, country, ctype, cpv, val, dur,
+                 w_comp, w_sb, w_cb, w_price, w_dur,
+                 procs, minprep, maxprep, meatonly):
+    base = {"country": country, "contract_type": ctype, "cpv_division": cpv,
+            "value_euro": val or 1_000_000, "duration_months": dur or 24,
+            "gpa": False, "eu_funds": False, "fra_agreement": False, "accelerated": False}
+    weights = {"competition": float(w_comp or 0), "single_bid_risk": float(w_sb or 0),
+               "cross_border": float(w_cb or 0), "price_ratio": float(w_price or 0),
+               "duration": float(w_dur or 0)}
+    constraints = {"allowed_procedure_types": procs or ["OPE","RES","NIC","COD"],
+                   "min_prep_time": float(minprep or 21), "max_prep_time": float(maxprep or 90),
+                   "must_use_meat": "meat" in (meatonly or [])}
+
+    try:
+        result = twin.optimize(base, weights, constraints, n_samples=400, seed=42)
+    except Exception as e:
+        return html.Div(f"Error: {e}", style={"color":COL_RED,"padding":"20px"}), f"Error: {e}"
+
+    if "error" in result:
+        return html.Div(result["error"], style={"color":COL_RED,"padding":"20px"}), result["error"]
+
+    candidates = result.get("candidates", [])
+    pareto = result.get("pareto_frontier", [])
+    pareto_objs = result.get("pareto_objectives", [])
+    best = result.get("best", {})
+    n_eval = result.get("search_space", {}).get("n_candidates_evaluated", 0)
+
+    # Best config card
+    PROC_LABELS = {"OPE":"Open","RES":"Restricted","NIC":"Negotiated","COD":"Competitive dialogue","AWP":"Direct award","INP":"Innovation partnership"}
+    best_card = html.Div([
+        html.Div("🥇 Optimal Configuration", style={"fontWeight":"700","color":COL_NAVY,"fontSize":"15px","marginBottom":"10px"}),
+        html.Div([
+            html.Span(f"Utility score: {best.get('utility_score',0):.3f}", style={"fontWeight":"600","color":COL_BLUE,"fontSize":"13px","marginRight":"16px"}),
+            html.Span(f"Procedure: {PROC_LABELS.get(best.get('procedure_type',''),'')}", style={"marginRight":"12px","fontSize":"13px"}),
+            html.Span(f"Criteria: {'MEAT' if best.get('criteria')=='M' else 'Lowest price'}", style={"marginRight":"12px","fontSize":"13px"}),
+            html.Span(f"Price weight: {best.get('price_weight_pct',0):.0f}%", style={"marginRight":"12px","fontSize":"13px"}),
+            html.Span(f"Prep time: {best.get('prep_time_days',0):.0f} days", style={"marginRight":"12px","fontSize":"13px"}),
+            html.Span(f"E-auction: {'Yes' if best.get('electronic_auction') else 'No'}", style={"fontSize":"13px"}),
+        ], style={"marginBottom":"12px","flexWrap":"wrap","display":"flex","gap":"4px"}),
+        html.Div([
+            html.Div([html.Div(f"{best['outcomes']['competition']:.1f}", style={"fontSize":"22px","fontWeight":"700","color":COL_BLUE}), html.Div("Exp. Bids", style={"fontSize":"11px","color":COL_GREY})], style={"textAlign":"center","flex":"1"}),
+            html.Div([html.Div(f"{best['outcomes']['single_bid_risk']:.0%}", style={"fontSize":"22px","fontWeight":"700","color":COL_RED}), html.Div("Single-bid risk", style={"fontSize":"11px","color":COL_GREY})], style={"textAlign":"center","flex":"1"}),
+            html.Div([html.Div(f"{best['outcomes']['cross_border']:.0%}", style={"fontSize":"22px","fontWeight":"700","color":COL_TEAL}), html.Div("Cross-border", style={"fontSize":"11px","color":COL_GREY})], style={"textAlign":"center","flex":"1"}),
+            html.Div([html.Div(f"{best['outcomes']['price_ratio']:.3f}", style={"fontSize":"22px","fontWeight":"700","color":COL_ORANGE}), html.Div("Price ratio", style={"fontSize":"11px","color":COL_GREY})], style={"textAlign":"center","flex":"1"}),
+            html.Div([html.Div(f"{best['outcomes']['duration']:.0f}d", style={"fontSize":"22px","fontWeight":"700","color":COL_GREY}), html.Div("Duration", style={"fontSize":"11px","color":COL_GREY})], style={"textAlign":"center","flex":"1"}),
+        ], style={"display":"flex","gap":"8px","backgroundColor":COL_BG,"borderRadius":"8px","padding":"14px"}),
+    ], style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"20px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","marginBottom":"16px","border":f"2px solid {COL_BLUE}"})
+
+    # Pareto frontier chart
+    pareto_section = html.Div()
+    if pareto and len(pareto_objs) == 2:
+        obj1, obj2 = pareto_objs
+        x_vals = [p[obj1] for p in pareto]
+        y_vals = [p[obj2] for p in pareto]
+        labels = [f"{PROC_LABELS.get(p.get('procedure_type',''),'')}, {p.get('prep_time_days',0):.0f}d prep" for p in pareto]
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=x_vals, y=y_vals, mode="markers+lines",
+                                 marker=dict(size=10, color=COL_BLUE),
+                                 text=labels, hovertemplate=f"{obj1}: %{{x:.3f}}<br>{obj2}: %{{y:.3f}}<br>%{{text}}<extra></extra>"))
+        fig.update_layout(title=f"Pareto Frontier: {obj1} vs {obj2}",
+                          xaxis_title=obj1.replace("_"," ").title(),
+                          yaxis_title=obj2.replace("_"," ").title(),
+                          height=280, margin=dict(l=40,r=20,t=40,b=40),
+                          paper_bgcolor=COL_CARD, plot_bgcolor=COL_BG)
+        pareto_section = html.Div([
+            html.H4(f"Pareto Frontier — {obj1.replace('_',' ').title()} vs {obj2.replace('_',' ').title()}", style={"color":COL_NAVY,"fontSize":"13px","margin":"0 0 8px 0"}),
+            dcc.Graph(figure=fig, config={"displayModeBar":False}),
+        ], style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","marginBottom":"16px"})
+
+    # Candidates table (top 10)
+    tbl_rows = []
+    for c in candidates[:10]:
+        tbl_rows.append(html.Tr([
+            html.Td(f"#{c['rank']}", style={"fontWeight":"700","color":COL_BLUE,"padding":"6px 10px","fontSize":"12px"}),
+            html.Td(f"{c['utility_score']:.3f}", style={"padding":"6px 8px","fontSize":"12px","fontWeight":"600"}),
+            html.Td(PROC_LABELS.get(c['procedure_type'],''), style={"padding":"6px 8px","fontSize":"12px"}),
+            html.Td("MEAT" if c['criteria']=="M" else "Lowest price", style={"padding":"6px 8px","fontSize":"12px"}),
+            html.Td(f"{c['price_weight_pct']:.0f}%", style={"padding":"6px 8px","fontSize":"12px"}),
+            html.Td(f"{c['prep_time_days']:.0f}d", style={"padding":"6px 8px","fontSize":"12px"}),
+            html.Td("Yes" if c['electronic_auction'] else "No", style={"padding":"6px 8px","fontSize":"12px"}),
+            html.Td(f"{c['outcomes']['competition']:.1f}", style={"padding":"6px 8px","fontSize":"12px","color":COL_BLUE}),
+            html.Td(f"{c['outcomes']['single_bid_risk']:.0%}", style={"padding":"6px 8px","fontSize":"12px","color":COL_RED}),
+        ]))
+    table = html.Div([
+        html.H4("Top 10 Candidates", style={"color":COL_NAVY,"fontSize":"13px","margin":"0 0 8px 0"}),
+        html.Table([
+            html.Thead(html.Tr([html.Th(h, style={"padding":"6px 8px","fontSize":"11px","color":COL_GREY,"textAlign":"left","backgroundColor":COL_BG}) for h in ["Rank","Score","Procedure","Criteria","Price wt","Prep","E-auction","Bids","Single-bid"]])),
+            html.Tbody(tbl_rows),
+        ], style={"width":"100%","borderCollapse":"collapse","fontSize":"12px"}),
+    ], style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","overflowX":"auto"})
+
+    status_msg = f"Evaluated {n_eval} candidates — best utility score {best.get('utility_score',0):.3f}"
+    return html.Div([best_card, pareto_section, table]), status_msg
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB 9: AI ADVISOR
+# ══════════════════════════════════════════════════════════════════
+def advisor_layout():
+    llm_note = ("🤖 Claude AI active — set ANTHROPIC_API_KEY for AI narrative"
+                if _ADVISOR_AVAILABLE and _advisor and _advisor._claude_available
+                else "⚙️ Rule-based advisor active (set ANTHROPIC_API_KEY for AI narrative)")
+
+    left = html.Div([
+        html.H3("Procedure Parameters", style={"color":COL_NAVY,"fontSize":"14px","fontWeight":"700","margin":"0 0 12px 0","borderBottom":f"2px solid {COL_LIGHT}","paddingBottom":"6px"}),
+        # Form fields manually — avoids duplicate IDs with build_form
+        _form_row("Country", dcc.Dropdown(id="adv-country", options=[{"label":c,"value":c} for c in COUNTRIES], value="DE", clearable=False)),
+        _form_row("Procedure type", html.Div([
+            dcc.Dropdown(id="adv-proc", options=PROC_OPTIONS, value="OPE", clearable=False),
+            html.Div(id="adv-proc-desc", style={"fontSize":"11px","color":COL_GREY,"marginTop":"4px","fontStyle":"italic"}),
+        ])),
+        _form_row("Contract type", dcc.RadioItems(id="adv-ctype", options=CONTRACT_OPTIONS, value="S", inline=True, className="radio-inline")),
+        _form_row("CPV sector", dcc.Dropdown(id="adv-cpv", options=CPV_OPTIONS, value="72", clearable=False)),
+        _form_row("Award criteria", dcc.RadioItems(id="adv-crit", options=CRITERIA_OPTIONS, value="M", className="radio-block")),
+        _form_row("Price weight (%)", html.Div([
+            html.Div(id="adv-pw-val", style={"fontSize":"11px","color":COL_GREY,"textAlign":"right","marginBottom":"2px"}),
+            dcc.Slider(id="adv-pw", min=0, max=100, step=5, value=60,
+                       marks={0:"0%",50:"50%",100:"100%"},
+                       tooltip={"placement":"bottom","always_visible":False}),
+        ]), id_suffix="adv-pw-row"),
+        _form_row("Estimated value (€)", dcc.Input(id="adv-val", type="number", value=1_000_000, min=10_000, step=10_000, style={"width":"100%","padding":"6px","border":"1px solid #CCC","borderRadius":"4px","fontSize":"13px"})),
+        _form_row("Preparation time (days)", dcc.Slider(id="adv-prep", min=15, max=90, step=1, value=35, marks={15:"15",35:"35",52:"52",90:"90"}, tooltip={"placement":"bottom","always_visible":True})),
+        _form_row("Contract duration (months)", dcc.Slider(id="adv-dur", min=3, max=60, step=3, value=24, marks={3:"3m",12:"1yr",24:"2yr",60:"5yr"}, tooltip={"placement":"bottom","always_visible":True})),
+        _form_row("Options", dcc.Checklist(id="adv-flags",
+            options=[{"label":" GPA covered","value":"gpa"},{"label":" EU funds","value":"eu_funds"},
+                     {"label":" Electronic auction","value":"ea"},{"label":" Framework agreement","value":"fra"},
+                     {"label":" Accelerated","value":"acc"}],
+            value=["gpa"], className="checklist")),
+        html.H3("Ask a Question (optional)", style={"color":COL_NAVY,"fontSize":"14px","fontWeight":"700","margin":"18px 0 8px 0","borderBottom":f"2px solid {COL_LIGHT}","paddingBottom":"6px"}),
+        dcc.Textarea(id="adv-question", placeholder="e.g. How do I reduce single-bid risk in IT contracts?",
+                     style={"width":"100%","height":"80px","padding":"8px","border":"1px solid #CCC","borderRadius":"6px","fontSize":"13px","resize":"vertical"}),
+        html.P(llm_note, style={"fontSize":"11px","color":COL_GREY,"marginTop":"6px","fontStyle":"italic"}),
+        html.Button("🧠  Get AI Advice", id="adv-btn", n_clicks=0, className="btn-primary"),
+        html.Div(id="adv-status", style={"fontSize":"12px","color":COL_BLUE,"marginTop":"10px","fontStyle":"italic"}),
+    ], style={"width":"320px","flexShrink":"0","backgroundColor":COL_CARD,"borderRadius":"10px","padding":"20px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","overflowY":"auto","maxHeight":"85vh"})
+
+    right = html.Div([
+        html.Div(id="adv-output", children=[
+            html.Div([
+                html.Div("🧠", style={"fontSize":"48px","marginBottom":"12px"}),
+                html.H3("AI Procurement Advisor", style={"color":COL_NAVY,"margin":"0 0 8px 0"}),
+                html.P("Configure your procedure parameters and click 'Get AI Advice' to receive evidence-based recommendations.",
+                       style={"color":COL_GREY,"maxWidth":"400px","margin":"0 auto"}),
+            ], style={"textAlign":"center","padding":"60px 20px"}),
+        ]),
+    ], style={"flex":"1","overflowY":"auto","maxHeight":"85vh","paddingLeft":"20px"})
+
+    return html.Div([left, right], style={"display":"flex","gap":"0","padding":"20px","alignItems":"flex-start","minHeight":"80vh"})
+
+
+@app.callback(Output("adv-proc-desc","children"), Input("adv-proc","value"))
+def adv_proc_desc(v): return PROC_DESCRIPTIONS.get(v,"")
+
+
+@app.callback(Output("adv-pw-val","children"), Input("adv-pw","value"))
+def adv_pw_val(v): return f"Price weight: {v}%"
+
+
+@app.callback(
+    Output("adv-pw-row","style"),
+    Input("adv-crit","value"),
+)
+def adv_pw_visibility(crit):
+    hidden = {"display":"none"}
+    visible = {"marginBottom":"13px"}
+    return visible if crit == "M" else hidden
+
+
+@app.callback(
+    Output("adv-output","children"),
+    Output("adv-status","children"),
+    Input("adv-btn","n_clicks"),
+    State("adv-country","value"), State("adv-proc","value"), State("adv-ctype","value"),
+    State("adv-cpv","value"), State("adv-crit","value"), State("adv-pw","value"),
+    State("adv-val","value"), State("adv-prep","value"), State("adv-dur","value"),
+    State("adv-flags","value"), State("adv-question","value"),
+    prevent_initial_call=True,
+)
+def run_advisor(n_clicks, country, proc, ctype, cpv, crit, pw, val, prep, dur, flags, question):
+    flags = flags or []
+    params = {"country":country,"procedure_type":proc,"contract_type":ctype,
+              "cpv_division":cpv,"criteria":crit,"price_weight_pct":float(pw or 50),
+              "value_euro":float(val or 1_000_000),"prep_time_days":float(prep or 35),
+              "duration_months":float(dur or 24),
+              "gpa":"gpa" in flags,"eu_funds":"eu_funds" in flags,
+              "fra_agreement":"fra" in flags,"electronic_auction":"ea" in flags,
+              "accelerated":"acc" in flags}
+    try:
+        sim = twin.simulate(params, n_samples=2000, seed=42)
+        shap = None
+        try:
+            shap = twin.compute_shap(params)
+        except Exception:
+            pass
+        if not _ADVISOR_AVAILABLE or not _advisor:
+            return html.Div("Advisor module unavailable.", style={"color":COL_RED,"padding":"20px"}), "Error"
+        advice = _advisor.advise(params, sim, shap, question or None)
+    except Exception as e:
+        return html.Div(f"Error: {e}", style={"color":COL_RED,"padding":"20px"}), f"Error: {e}"
+
+    SEV_COLOR = {"high":COL_RED,"medium":COL_ORANGE,"low":COL_GREEN}
+    SEV_BG    = {"high":"#FFF0F0","medium":"#FFF8F0","low":"#F0FFF4"}
+
+    # Summary card
+    llm_badge = html.Span(" 🤖 AI-powered", style={"fontSize":"10px","backgroundColor":"#E8F0FF","color":COL_BLUE,"padding":"2px 7px","borderRadius":"3px","fontWeight":"700","marginLeft":"8px"}) if advice.get("llm_powered") else html.Span()
+    summary_card = html.Div([
+        html.Div([html.Span("📋 Executive Summary", style={"fontWeight":"700","color":COL_NAVY,"fontSize":"14px"}), llm_badge]),
+        html.P(advice.get("summary",""), style={"fontSize":"13px","color":"#333","margin":"8px 0 0","lineHeight":"1.6"}),
+    ], style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","marginBottom":"14px","borderLeft":f"4px solid {COL_BLUE}"})
+
+    # LLM narrative
+    llm_block = html.Div()
+    if advice.get("llm_narrative"):
+        llm_block = html.Div([
+            html.Div("🤖 AI Narrative", style={"fontWeight":"700","color":COL_NAVY,"fontSize":"13px","marginBottom":"8px"}),
+            html.Pre(advice["llm_narrative"], style={"fontSize":"12px","whiteSpace":"pre-wrap","color":"#333","fontFamily":"'Segoe UI',Arial,sans-serif","lineHeight":"1.65","margin":"0"}),
+        ], style={"backgroundColor":"#F0F4FF","borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","marginBottom":"14px","border":"1px solid #BDD0FF"})
+
+    # Risks & strengths row
+    risks = advice.get("key_risks",[])
+    strs  = advice.get("strengths",[])
+    risk_items  = [html.Div(f"• {r}", style={"fontSize":"12px","color":"#555","marginBottom":"3px"}) for r in risks] or [html.Div("No critical risks identified.", style={"fontSize":"12px","color":COL_GREY})]
+    str_items   = [html.Div(f"• {s}", style={"fontSize":"12px","color":"#555","marginBottom":"3px"}) for s in strs] or [html.Div("No specific strengths flagged.", style={"fontSize":"12px","color":COL_GREY})]
+    rs_row = html.Div([
+        html.Div([html.Div("⚠️ Key Risks", style={"fontWeight":"700","color":COL_RED,"fontSize":"12px","marginBottom":"6px"}), *risk_items],
+                 style={"flex":"1","backgroundColor":"#FFF8F8","borderRadius":"8px","padding":"12px","border":"1px solid #FFD0D0"}),
+        html.Div([html.Div("✅ Strengths", style={"fontWeight":"700","color":COL_GREEN,"fontSize":"12px","marginBottom":"6px"}), *str_items],
+                 style={"flex":"1","backgroundColor":"#F0FFF4","borderRadius":"8px","padding":"12px","border":"1px solid #B0EDB0"}),
+    ], style={"display":"flex","gap":"12px","marginBottom":"14px"})
+
+    # Recommendations
+    rec_cards = []
+    for r in advice.get("recommendations",[]):
+        sev = r.get("severity","low")
+        rec_cards.append(html.Div([
+            html.Div([
+                html.Span(r.get("issue",""), style={"fontWeight":"700","color":COL_NAVY,"fontSize":"13px"}),
+                html.Span(sev.upper(), style={"fontSize":"9px","fontWeight":"700","color":SEV_COLOR.get(sev,COL_GREY),"backgroundColor":SEV_COLOR.get(sev,COL_GREY)+"22","padding":"2px 7px","borderRadius":"3px","marginLeft":"8px"}),
+            ], style={"marginBottom":"6px"}),
+            html.P(r.get("recommendation",""), style={"fontSize":"12px","color":"#444","margin":"0 0 6px 0","lineHeight":"1.6"}),
+            html.Div(f"💡 {r.get('impact','')}", style={"fontSize":"11px","color":COL_BLUE,"fontStyle":"italic"}),
+        ], style={"backgroundColor":SEV_BG.get(sev,"#FFF"),"borderRadius":"8px","padding":"14px","marginBottom":"10px","borderLeft":f"3px solid {SEV_COLOR.get(sev,COL_GREY)}"}))
+
+    rec_children = rec_cards or [html.Div("No specific recommendations — design looks good!", style={"fontSize":"12px","color":COL_GREEN})]
+    rec_section = html.Div([
+        html.Div(f"📌 Recommendations ({len(rec_cards)})", style={"fontWeight":"700","color":COL_NAVY,"fontSize":"13px","marginBottom":"10px"}),
+        *rec_children,
+    ], style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)"})
+
+    status = f"{len(rec_cards)} recommendation(s) · {'AI-powered' if advice.get('llm_powered') else 'Rule-based'}"
+    return html.Div([summary_card, llm_block, rs_row, rec_section]), status
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB 10: RISK RADAR
+# ══════════════════════════════════════════════════════════════════
+def radar_layout():
+    RADAR_CLUSTERS = ["CEE","Germanic","Western","Nordic","Mediterranean","Iberian","Baltic","Benelux","Anglophone","Balkan"]
+    RADAR_CPVS     = ["45","72","33","48","71","60","79","85","39","31"]
+    CPV_SHORT      = {"45":"Construction","72":"IT Services","33":"Medical","48":"Software",
+                      "71":"Architecture","60":"Transport","79":"Business Svc","85":"Health",
+                      "39":"Furniture","31":"Electrical"}
+
+    # Compute risk grid via simulation (fast — no MC noise, point estimates)
+    grid_sb   = np.zeros((len(RADAR_CLUSTERS), len(RADAR_CPVS)))
+    grid_comp = np.zeros((len(RADAR_CLUSTERS), len(RADAR_CPVS)))
+
+    CLUSTER_COUNTRY = {"CEE":"PL","Germanic":"DE","Western":"FR","Nordic":"SE",
+                       "Mediterranean":"GR","Iberian":"ES","Baltic":"LT",
+                       "Benelux":"BE","Anglophone":"IE","Balkan":"HR"}
+
+    for i, cluster in enumerate(RADAR_CLUSTERS):
+        country = CLUSTER_COUNTRY.get(cluster, "DE")
+        for j, cpv in enumerate(RADAR_CPVS):
+            try:
+                sim = twin.simulate({"country":country,"procedure_type":"OPE",
+                                     "contract_type":"S","cpv_division":cpv,
+                                     "criteria":"M","price_weight_pct":50,
+                                     "value_euro":500_000,"prep_time_days":35,
+                                     "duration_months":24}, n_samples=300, seed=42)
+                grid_sb[i,j]   = sim["single_bid_risk"]["probability"]
+                grid_comp[i,j] = sim["competition"]["mean"]
+            except Exception:
+                grid_sb[i,j]   = float("nan")
+                grid_comp[i,j] = float("nan")
+
+    # Single-bid risk heatmap
+    fig_sb = go.Figure(go.Heatmap(
+        z=grid_sb.tolist(),
+        x=[CPV_SHORT.get(c,c) for c in RADAR_CPVS],
+        y=RADAR_CLUSTERS,
+        colorscale=[[0,"#D5E8F0"],[0.4,"#FFD700"],[0.7,"#FF8C00"],[1.0,"#C00000"]],
+        zmin=0, zmax=0.6,
+        text=[[f"{v:.0%}" for v in row] for row in grid_sb.tolist()],
+        texttemplate="%{text}",
+        textfont={"size":10},
+        hovertemplate="Cluster: %{y}<br>CPV: %{x}<br>Single-bid risk: %{z:.1%}<extra></extra>",
+    ))
+    fig_sb.update_layout(title="Single-Bid Risk by Cluster × CPV Sector",
+                         height=340, margin=dict(l=90,r=20,t=45,b=60),
+                         paper_bgcolor=COL_CARD, plot_bgcolor=COL_CARD,
+                         xaxis=dict(tickangle=-30))
+
+    # Competition heatmap
+    fig_comp = go.Figure(go.Heatmap(
+        z=grid_comp.tolist(),
+        x=[CPV_SHORT.get(c,c) for c in RADAR_CPVS],
+        y=RADAR_CLUSTERS,
+        colorscale=[[0,"#C00000"],[0.4,"#FF8C00"],[0.7,"#FFD700"],[1.0,"#217346"]],
+        zmin=1, zmax=8,
+        text=[[f"{v:.1f}" for v in row] for row in grid_comp.tolist()],
+        texttemplate="%{text}",
+        textfont={"size":10},
+        hovertemplate="Cluster: %{y}<br>CPV: %{x}<br>Expected bids: %{z:.1f}<extra></extra>",
+    ))
+    fig_comp.update_layout(title="Expected Competition (Bids) by Cluster × CPV Sector",
+                           height=340, margin=dict(l=90,r=20,t=45,b=60),
+                           paper_bgcolor=COL_CARD, plot_bgcolor=COL_CARD,
+                           xaxis=dict(tickangle=-30))
+
+    # Top-10 highest risk segments bar chart
+    segments = []
+    for i, cluster in enumerate(RADAR_CLUSTERS):
+        for j, cpv in enumerate(RADAR_CPVS):
+            segments.append({"label":f"{cluster} / {CPV_SHORT.get(cpv,cpv)}", "sb":grid_sb[i,j], "comp":grid_comp[i,j]})
+    segments.sort(key=lambda x: -x["sb"])
+    top10 = segments[:10]
+    fig_bar = go.Figure(go.Bar(
+        x=[s["label"] for s in top10],
+        y=[s["sb"] for s in top10],
+        marker_color=[COL_RED if s["sb"]>0.4 else COL_ORANGE if s["sb"]>0.3 else COL_GREY for s in top10],
+        text=[f"{s['sb']:.0%}" for s in top10],
+        textposition="outside",
+        hovertemplate="%{x}<br>Single-bid risk: %{y:.1%}<extra></extra>",
+    ))
+    fig_bar.update_layout(title="Top 10 Highest Single-Bid Risk Segments",
+                          yaxis=dict(title="Single-bid risk", tickformat=".0%", range=[0,0.7]),
+                          height=300, margin=dict(l=40,r=20,t=45,b=80),
+                          paper_bgcolor=COL_CARD, plot_bgcolor=COL_BG,
+                          xaxis=dict(tickangle=-30))
+
+    # KPI summary row
+    avg_sb   = float(np.nanmean(grid_sb))
+    high_risk = int(np.sum(grid_sb > 0.4))
+    low_comp  = int(np.sum(grid_comp < 3.0))
+    kpi_row = html.Div([
+        html.Div([html.Div(f"{avg_sb:.0%}", style={"fontSize":"28px","fontWeight":"700","color":COL_RED}), html.Div("Avg single-bid risk", style={"fontSize":"11px","color":COL_GREY})], style={"flex":"1","textAlign":"center","backgroundColor":COL_CARD,"borderRadius":"8px","padding":"14px","boxShadow":"0 2px 6px rgba(0,0,0,0.06)"}),
+        html.Div([html.Div(str(high_risk), style={"fontSize":"28px","fontWeight":"700","color":COL_ORANGE}), html.Div("Segments >40% risk", style={"fontSize":"11px","color":COL_GREY})], style={"flex":"1","textAlign":"center","backgroundColor":COL_CARD,"borderRadius":"8px","padding":"14px","boxShadow":"0 2px 6px rgba(0,0,0,0.06)"}),
+        html.Div([html.Div(str(low_comp), style={"fontSize":"28px","fontWeight":"700","color":COL_BLUE}), html.Div("Segments <3 bids", style={"fontSize":"11px","color":COL_GREY})], style={"flex":"1","textAlign":"center","backgroundColor":COL_CARD,"borderRadius":"8px","padding":"14px","boxShadow":"0 2px 6px rgba(0,0,0,0.06)"}),
+        html.Div([html.Div(f"{float(np.nanmean(grid_comp)):.1f}", style={"fontSize":"28px","fontWeight":"700","color":COL_GREEN}), html.Div("Avg expected bids", style={"fontSize":"11px","color":COL_GREY})], style={"flex":"1","textAlign":"center","backgroundColor":COL_CARD,"borderRadius":"8px","padding":"14px","boxShadow":"0 2px 6px rgba(0,0,0,0.06)"}),
+    ], style={"display":"flex","gap":"12px","marginBottom":"16px"})
+
+    return html.Div([
+        html.H2("📊 Risk Radar — Procurement Risk by Segment",
+                style={"color":COL_NAVY,"fontSize":"18px","margin":"0 0 4px 0","fontWeight":"700"}),
+        html.P("Simulated single-bid risk and expected competition across all country clusters and CPV sectors. Based on open procedures, MEAT criteria, €500k value, 35-day preparation.",
+               style={"color":COL_GREY,"fontSize":"12px","margin":"0 0 16px 0"}),
+        kpi_row,
+        html.Div([dcc.Graph(figure=fig_sb, config={"displayModeBar":False})],
+                 style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","marginBottom":"16px"}),
+        html.Div([dcc.Graph(figure=fig_comp, config={"displayModeBar":False})],
+                 style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","marginBottom":"16px"}),
+        html.Div([dcc.Graph(figure=fig_bar, config={"displayModeBar":False})],
+                 style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)"}),
+    ], style={"padding":"20px"})
 
 
 # ══════════════════════════════════════════════════════════════════

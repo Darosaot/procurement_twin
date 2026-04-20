@@ -486,6 +486,316 @@ class ProcurementTwin:
         """Return pre-computed global mean SHAP importances."""
         return self._shap_global
 
+    def optimize(self, base_params: dict, objective_weights: dict,
+                 constraints: dict = None, n_samples: int = 500,
+                 seed: int = 42) -> dict:
+        """
+        Multi-objective optimisation engine.
+
+        Sweeps over controllable procedure parameters (procedure type, criteria,
+        price weight, prep time, e-auction) and ranks candidate configurations
+        by a weighted utility score across all five outcome dimensions.
+
+        Parameters
+        ----------
+        base_params : dict
+            Fixed context (country, contract_type, cpv_division, value_euro, …)
+        objective_weights : dict
+            Signed weight for each outcome.
+            Positive = maximise, Negative = minimise.
+            Keys: competition, single_bid_risk, cross_border, price_ratio, duration
+        constraints : dict, optional
+            allowed_procedure_types : list[str]
+            min_prep_time : float
+            max_prep_time : float
+            must_use_meat : bool
+        n_samples : int
+            Monte Carlo samples per candidate (lower = faster, ≥300 recommended)
+        seed : int
+
+        Returns
+        -------
+        dict
+            candidates        — top-20 configurations with scores and outcomes
+            pareto_frontier   — non-dominated solutions for top-2 objectives
+            best              — single best configuration
+            objective_weights — echo of weights used
+            search_space      — number of candidates evaluated
+        """
+        if constraints is None:
+            constraints = {}
+
+        allowed_procs = constraints.get(
+            "allowed_procedure_types", ["OPE", "RES", "NIC", "COD"]
+        )
+        min_prep = float(constraints.get("min_prep_time", 21))
+        max_prep = float(constraints.get("max_prep_time", 90))
+        must_meat = bool(constraints.get("must_use_meat", False))
+
+        # Prep-time grid (honour constraints)
+        all_preps = [21.0, 35.0, 52.0, 65.0, 80.0]
+        prep_options = [p for p in all_preps if min_prep <= p <= max_prep]
+        if not prep_options:
+            prep_options = [max(min_prep, 21.0)]
+
+        # Generate candidate grid
+        candidates_params = []
+        crit_options = ["M"] if must_meat else ["M", "L"]
+        for proc in allowed_procs:
+            for crit in crit_options:
+                pw_opts = [20.0, 50.0, 80.0] if crit == "M" else [100.0]
+                for pw in pw_opts:
+                    for prep in prep_options:
+                        for ea in [False, True]:
+                            candidates_params.append({
+                                **base_params,
+                                "procedure_type":    proc,
+                                "criteria":          crit,
+                                "price_weight_pct":  pw,
+                                "prep_time_days":    prep,
+                                "electronic_auction": ea,
+                            })
+
+        if not candidates_params:
+            return {"error": "No candidates generated — check constraints.", "candidates": []}
+
+        # Evaluate all candidates
+        outcome_keys = ["competition", "single_bid_risk", "cross_border",
+                        "price_ratio", "duration"]
+        raw_results = []
+        for i, cp in enumerate(candidates_params):
+            sim = self.simulate(cp, n_samples=n_samples, seed=seed + i)
+            raw_results.append({
+                "params": cp,
+                "outcomes": {
+                    "competition":     sim["competition"]["mean"],
+                    "single_bid_risk": sim["single_bid_risk"]["probability"],
+                    "cross_border":    sim["cross_border"]["probability"],
+                    "price_ratio":     sim["price_ratio"]["mean"],
+                    "duration":        sim["duration"]["mean"],
+                },
+            })
+
+        # Normalise each outcome to [0,1] across the candidate pool
+        vals = {k: np.array([r["outcomes"][k] for r in raw_results])
+                for k in outcome_keys}
+        lo = {k: float(vals[k].min()) for k in outcome_keys}
+        hi = {k: float(vals[k].max()) for k in outcome_keys}
+
+        def _norm(key, val):
+            rng = hi[key] - lo[key]
+            return (val - lo[key]) / rng if rng > 1e-12 else 0.5
+
+        weights = {k: float(objective_weights.get(k, 0.0)) for k in outcome_keys}
+
+        for r in raw_results:
+            score = sum(weights[k] * _norm(k, r["outcomes"][k]) for k in outcome_keys)
+            r["utility_score"] = round(float(score), 5)
+
+        raw_results.sort(key=lambda x: -x["utility_score"])
+
+        def _fmt(r, rank):
+            p = r["params"]
+            return {
+                "rank":               rank,
+                "utility_score":      r["utility_score"],
+                "procedure_type":     p["procedure_type"],
+                "criteria":           p["criteria"],
+                "price_weight_pct":   p["price_weight_pct"],
+                "prep_time_days":     p["prep_time_days"],
+                "electronic_auction": p["electronic_auction"],
+                "outcomes":           {k: round(v, 4) for k, v in r["outcomes"].items()},
+            }
+
+        top20 = [_fmt(r, i + 1) for i, r in enumerate(raw_results[:20])]
+
+        # Pareto frontier for top-2 objectives by absolute weight
+        sorted_w = sorted(weights.items(), key=lambda kv: -abs(kv[1]))
+        pareto_objs = [k for k, w in sorted_w[:2] if w != 0.0]
+        pareto = []
+        if len(pareto_objs) >= 2:
+            obj1, obj2 = pareto_objs
+            sign1 = 1.0 if weights[obj1] > 0 else -1.0
+            sign2 = 1.0 if weights[obj2] > 0 else -1.0
+
+            def _dominated(a, b):
+                a1, a2 = sign1 * a["outcomes"][obj1], sign2 * a["outcomes"][obj2]
+                b1, b2 = sign1 * b["outcomes"][obj1], sign2 * b["outcomes"][obj2]
+                return b1 >= a1 and b2 >= a2 and (b1 > a1 or b2 > a2)
+
+            for r in raw_results:
+                if not any(_dominated(r, other)
+                           for other in raw_results if other is not r):
+                    pareto.append({
+                        obj1:              round(r["outcomes"][obj1], 4),
+                        obj2:              round(r["outcomes"][obj2], 4),
+                        "utility_score":   r["utility_score"],
+                        "procedure_type":  r["params"]["procedure_type"],
+                        "criteria":        r["params"]["criteria"],
+                        "prep_time_days":  r["params"]["prep_time_days"],
+                        "electronic_auction": r["params"]["electronic_auction"],
+                    })
+
+        return {
+            "best":              top20[0] if top20 else None,
+            "candidates":        top20,
+            "pareto_frontier":   pareto,
+            "pareto_objectives": pareto_objs,
+            "objective_weights": weights,
+            "search_space":      {"n_candidates_evaluated": len(raw_results)},
+        }
+
+    def policy_compare(self, segment_filters: dict, policies: list,
+                       n_records: int = 300, seed: int = 0) -> dict:
+        """
+        Compare multiple policy interventions against the status-quo baseline.
+
+        Parameters
+        ----------
+        segment_filters : dict
+            country_cluster, cpv_division, TOP_TYPE, year_from, year_to
+        policies : list[dict]
+            Each entry: {"name": str, "intervention": dict | None}
+            Use intervention=None for "Status Quo" entries.
+            intervention format: {"param": str, "delta": float} or {"param": str, "value": any}
+        n_records : int
+            Historical records to sample
+
+        Returns
+        -------
+        dict
+            baseline   — status-quo aggregate outcomes
+            policies   — per-policy outcomes and deltas vs baseline
+            n_matched  — records matching the filters
+            n_simulated — records actually simulated
+        """
+        import polars as pl
+        df = pl.read_parquet(f"{FEAT_DIR}/procedure_records.parquet").to_pandas()
+
+        if segment_filters.get("country_cluster"):
+            df = df[df["country_cluster"] == segment_filters["country_cluster"]]
+        if segment_filters.get("cpv_division"):
+            df = df[df["cpv_division"] == str(segment_filters["cpv_division"])]
+        if segment_filters.get("TOP_TYPE"):
+            df = df[df["TOP_TYPE"] == segment_filters["TOP_TYPE"]]
+        yf = segment_filters.get("year_from", 2018)
+        yt = segment_filters.get("year_to", 2023)
+        df = df[df["YEAR"].between(yf, yt)]
+
+        n_matched = len(df)
+        if n_matched == 0:
+            return {"error": "No records match these filters.", "n_matched": 0}
+
+        rng = np.random.default_rng(seed)
+        sample = df.sample(min(n_records, n_matched),
+                           random_state=seed).reset_index(drop=True)
+        n_sim = len(sample)
+
+        def _s(val, default):
+            if val is None:
+                return default
+            try:
+                f = float(val)
+                return default if (np.isnan(f) or np.isinf(f)) else f
+            except (TypeError, ValueError):
+                return val if val else default
+
+        def _ss(val, default):
+            s = str(val) if val is not None else default
+            return default if s in ("nan", "None", "") else s
+
+        base_records = [
+            {
+                "country":            _ss(row.get("ISO_COUNTRY_CODE"), "DE"),
+                "procedure_type":     _ss(row.get("TOP_TYPE"), "OPE"),
+                "contract_type":      _ss(row.get("TYPE_OF_CONTRACT"), "S"),
+                "cpv_division":       _ss(row.get("cpv_division"), "72"),
+                "criteria":           _ss(row.get("CRIT_CODE"), "M"),
+                "value_euro":         _s(row.get("VALUE_EURO"), 1_000_000),
+                "prep_time_days":     _s(row.get("prep_time_days"), 35.0),
+                "duration_months":    _s(row.get("contract_duration_months"), 24.0),
+                "price_weight_pct":   _s(row.get("price_weight_pct"), 50.0),
+                "gpa":                bool(int(_s(row.get("flag_b_gpa"), 0))),
+                "eu_funds":           bool(int(_s(row.get("flag_b_eu_funds"), 0))),
+                "fra_agreement":      bool(int(_s(row.get("flag_b_fra_agreement"), 0))),
+                "electronic_auction": bool(int(_s(row.get("flag_b_electronic_auction"), 0))),
+                "accelerated":        bool(int(_s(row.get("flag_b_accelerated"), 0))),
+            }
+            for _, row in sample.iterrows()
+        ]
+
+        outcome_keys = ["competition", "single_bid_risk", "price_ratio", "duration"]
+        n_seeds = n_sim * (len(policies) + 1)
+        seeds = rng.integers(0, 1_000_000, size=n_seeds).tolist()
+        sid = 0
+
+        # Simulate status-quo baseline
+        baseline = {k: np.zeros(n_sim) for k in outcome_keys}
+        for i, bp in enumerate(base_records):
+            sim = self.simulate(bp, n_samples=200, seed=seeds[sid]); sid += 1
+            baseline["competition"][i]     = sim["competition"]["mean"]
+            baseline["single_bid_risk"][i] = sim["single_bid_risk"]["probability"]
+            baseline["price_ratio"][i]     = sim["price_ratio"]["mean"]
+            baseline["duration"][i]        = sim["duration"]["mean"]
+
+        def _agg(arr_c, arr_b):
+            delta = arr_c - arr_b
+            return {
+                "mean":              round(float(arr_c.mean()), 3),
+                "delta_vs_baseline": round(float(delta.mean()), 3),
+                "pct_delta":         round(float(
+                    delta.mean() / (abs(arr_b.mean()) + 1e-9) * 100), 1),
+                "ci_95_lo": round(float(np.percentile(delta, 2.5)), 3),
+                "ci_95_hi": round(float(np.percentile(delta, 97.5)), 3),
+            }
+
+        baseline_agg = {
+            k: {"mean": round(float(baseline[k].mean()), 3),
+                "delta_vs_baseline": 0.0, "pct_delta": 0.0,
+                "ci_95_lo": 0.0, "ci_95_hi": 0.0}
+            for k in outcome_keys
+        }
+
+        # Simulate each policy
+        policy_results = []
+        for policy in policies:
+            intervention = policy.get("intervention")
+            pol = {k: np.zeros(n_sim) for k in outcome_keys}
+
+            for i, bp in enumerate(base_records):
+                if intervention is None:
+                    for k in outcome_keys:
+                        pol[k][i] = baseline[k][i]
+                    sid += 1
+                else:
+                    cf = bp.copy()
+                    pk = intervention.get("param")
+                    pdelta = intervention.get("delta")
+                    pval   = intervention.get("value")
+                    if pdelta is not None and pk in cf:
+                        cf[pk] = float(cf.get(pk) or 0) + pdelta
+                    elif pval is not None:
+                        cf[pk] = pval
+                    sim = self.simulate(cf, n_samples=200, seed=seeds[sid]); sid += 1
+                    pol["competition"][i]     = sim["competition"]["mean"]
+                    pol["single_bid_risk"][i] = sim["single_bid_risk"]["probability"]
+                    pol["price_ratio"][i]     = sim["price_ratio"]["mean"]
+                    pol["duration"][i]        = sim["duration"]["mean"]
+
+            policy_results.append({
+                "name":         policy.get("name", "Policy"),
+                "intervention": intervention,
+                "outcomes":     {k: _agg(pol[k], baseline[k]) for k in outcome_keys},
+            })
+
+        return {
+            "n_matched":        n_matched,
+            "n_simulated":      n_sim,
+            "segment_filters":  segment_filters,
+            "baseline":         {"name": "Status Quo", "outcomes": baseline_agg},
+            "policies":         policy_results,
+        }
+
     def policy_simulation(self, segment_filters: dict, intervention: dict,
                           n_records: int = 500, seed: int = 0) -> dict:
         """

@@ -76,6 +76,15 @@ from api.cache   import simulation_cache
 from api.metrics import track_simulation, record_cache_hit, record_cache_miss, prometheus_response
 from api.history import simulation_history
 
+try:
+    from advisor.advisor import ProcurementAdvisor as _ProcurementAdvisor
+    _advisor = _ProcurementAdvisor()
+    _ADVISOR_AVAILABLE = True
+except Exception as _adv_err:
+    _advisor = None
+    _ADVISOR_AVAILABLE = False
+    logger.warning("Advisor module unavailable: %s", _adv_err)
+
 # ── Rate limiter ──────────────────────────────────────────────────
 _RATE_LIMIT = os.environ.get("RATE_LIMIT", "60/minute")
 if _SLOWAPI:
@@ -521,6 +530,15 @@ def index():
             "POST /policy":         "Aggregate counterfactual policy simulation",
             "POST /explain":        "Per-prediction feature contributions (SHAP)",
             "POST /export":         "Download any result as CSV or JSON",
+            # V2 endpoints
+            "POST /optimize":       "V2 — Multi-objective procedure optimisation",
+            "POST /policy/compare": "V2 — Compare multiple policy interventions",
+            "POST /advise":         "V2 — AI Procurement Advisor (rule-based + Claude)",
+        },
+        "v2_features": {
+            "optimisation_engine": "Multi-objective Pareto optimisation over procedure parameters",
+            "policy_lab":          "Side-by-side comparison of up to 5 policy interventions",
+            "ai_advisor":          "Structured procurement advice; Claude-powered if ANTHROPIC_API_KEY set",
         },
     }
 
@@ -1068,6 +1086,323 @@ def sensitivity(req: SensitivityRequest):
             "timestamp":   datetime.utcnow().isoformat() + "Z",
         },
     }
+
+
+# ─────────────────────────────────────────────────────────────────
+# V2 SCHEMAS
+# ─────────────────────────────────────────────────────────────────
+
+_OBJECTIVE_KEYS = {"competition", "single_bid_risk", "cross_border",
+                   "price_ratio", "duration"}
+
+
+class ObjectiveWeights(BaseModel):
+    """
+    Signed weights for each procurement outcome.
+    Positive = maximise the outcome; negative = minimise it.
+    Weights are normalised internally so only relative magnitudes matter.
+    """
+    competition:     float = Field(0.0, ge=-1.0, le=1.0,
+        description="Weight for number of bids (positive = want more competition).")
+    single_bid_risk: float = Field(0.0, ge=-1.0, le=1.0,
+        description="Weight for single-bid risk (negative = want lower risk).")
+    cross_border:    float = Field(0.0, ge=-1.0, le=1.0,
+        description="Weight for cross-border win probability (positive = want higher).")
+    price_ratio:     float = Field(0.0, ge=-1.0, le=1.0,
+        description="Weight for price ratio (negative = want lower ratio / cheaper).")
+    duration:        float = Field(0.0, ge=-1.0, le=1.0,
+        description="Weight for procedure duration (negative = want shorter).")
+
+
+class OptimisationConstraints(BaseModel):
+    """Optional hard constraints for the optimisation search space."""
+    allowed_procedure_types: Optional[List[str]] = Field(
+        None, description="Restrict to a subset of procedure types, e.g. ['OPE', 'NIC'].")
+    min_prep_time: float = Field(21.0, ge=14.0, le=90.0)
+    max_prep_time: float = Field(90.0, ge=14.0, le=90.0)
+    must_use_meat: bool  = Field(False, description="Force MEAT award criteria.")
+
+    @field_validator("allowed_procedure_types")
+    @classmethod
+    def validate_procs(cls, v):
+        if v is not None:
+            invalid = set(v) - VALID_PROCEDURE_TYPES
+            if invalid:
+                raise ValueError(f"Unknown procedure types: {invalid}")
+        return v
+
+
+class OptimisationRequest(BaseModel):
+    """Request body for /optimize."""
+    base_params:       ProcedureParams
+    objective_weights: ObjectiveWeights
+    constraints:       Optional[OptimisationConstraints] = None
+    n_samples:         int = Field(500, ge=100, le=2000,
+        description="Monte Carlo samples per candidate. Lower = faster, higher = more precise.")
+    seed:              int = Field(42, ge=0)
+
+
+class PolicyComparePolicyItem(BaseModel):
+    """One policy variant for /policy/compare."""
+    name:         str = Field(..., max_length=60)
+    intervention: Optional[PolicyIntervention] = Field(
+        None, description="Use null for 'Status Quo' baseline entry.")
+
+
+class PolicyCompareRequest(BaseModel):
+    """Request body for /policy/compare."""
+    country_cluster:  Optional[str] = Field(None)
+    cpv_division:     Optional[str] = Field(None)
+    procedure_type:   Optional[str] = Field(None)
+    year_from:        int = Field(2018, ge=2018, le=2023)
+    year_to:          int = Field(2023, ge=2018, le=2023)
+    policies:         List[PolicyComparePolicyItem] = Field(
+        ..., min_length=1, max_length=5,
+        description="Up to 5 policy variants (include a null-intervention entry for Status Quo).")
+    n_records:        int = Field(200, ge=50, le=1000)
+    seed:             int = Field(0, ge=0)
+
+    @field_validator("cpv_division")
+    @classmethod
+    def validate_cpv(cls, v):
+        if v is not None and v not in VALID_CPV_DIVISIONS:
+            raise ValueError(f"Unknown CPV division '{v}'.")
+        return v
+
+    @field_validator("procedure_type")
+    @classmethod
+    def validate_proc(cls, v):
+        if v is not None and v not in VALID_PROCEDURE_TYPES:
+            raise ValueError(f"Unknown procedure type '{v}'.")
+        return v
+
+
+class AdviseRequest(BaseModel):
+    """Request body for /advise."""
+    params:           ProcedureParams
+    question:         Optional[str] = Field(None, max_length=500,
+        description="Specific question for the AI advisor (activates Claude narrative if available).")
+    include_shap:     bool = Field(True, description="Compute SHAP contributions for richer advice.")
+    n_samples:        int  = Field(2000, ge=200, le=5000)
+    seed:             int  = Field(42, ge=0)
+
+
+# ─────────────────────────────────────────────────────────────────
+# V2 ENDPOINTS
+# ─────────────────────────────────────────────────────────────────
+
+@app.post(
+    "/optimize",
+    tags=["V2 — Optimisation"],
+    summary="Multi-objective procedure optimisation",
+    dependencies=[Depends(require_api_key)],
+)
+async def optimise(req: OptimisationRequest):
+    """
+    **V2 Flagship feature** — Find the optimal procurement procedure configuration
+    given user-defined objective weights and optional hard constraints.
+
+    The engine sweeps ~72–200 candidate configurations (varying procedure type,
+    award criteria, price weight, preparation time, and e-auction), evaluates each
+    via Monte Carlo simulation, and ranks them by a weighted utility score.
+
+    Also returns the **Pareto frontier** for the top-2 weighted objectives, enabling
+    trade-off visualisation (e.g. competition vs. duration).
+
+    **Objective weights**: positive = maximise, negative = minimise.
+    Example: `{"competition": 0.4, "single_bid_risk": -0.4, "duration": -0.2}`.
+
+    Returns:
+    - `best` — single highest-utility configuration
+    - `candidates` — top-20 ranked configurations with full outcome predictions
+    - `pareto_frontier` — non-dominated solutions for the top-2 objectives
+    - `search_space` — number of candidates evaluated
+    """
+    t0 = time.time()
+
+    weights = req.objective_weights.model_dump()
+    if all(w == 0.0 for w in weights.values()):
+        raise HTTPException(
+            status_code=422,
+            detail="At least one objective weight must be non-zero.",
+        )
+
+    constraints = None
+    if req.constraints:
+        constraints = req.constraints.model_dump(exclude_none=True)
+        if constraints.get("allowed_procedure_types") is None:
+            constraints.pop("allowed_procedure_types", None)
+
+    base = req.base_params.to_twin_params()
+
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        _twin.optimize,
+        base_params=base,
+        objective_weights=weights,
+        constraints=constraints,
+        n_samples=req.n_samples,
+        seed=req.seed,
+    )
+    try:
+        result = await loop.run_in_executor(_blocking_executor, fn)
+    except (KeyError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.error("Optimisation error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal optimisation error.")
+
+    if "error" in result:
+        return JSONResponse(status_code=200, content=result)
+
+    result["meta"] = {
+        "duration_ms": round((time.time() - t0) * 1000, 1),
+        "timestamp":   datetime.utcnow().isoformat() + "Z",
+        "n_samples":   req.n_samples,
+    }
+    simulation_history.record(
+        "/optimize",
+        {"weights": weights, "n_samples": req.n_samples},
+        (time.time() - t0) * 1000, 200,
+    )
+    return result
+
+
+@app.post(
+    "/policy/compare",
+    tags=["V2 — Policy Lab"],
+    summary="Compare multiple policy interventions",
+    dependencies=[Depends(require_api_key)],
+)
+async def policy_compare(req: PolicyCompareRequest):
+    """
+    **V2 Policy Lab** — Simulate and compare up to 5 policy interventions
+    against the status-quo baseline on the same population of historical procedures.
+
+    Unlike `/policy` (single intervention), this endpoint runs all interventions
+    on the same sampled records so results are directly comparable.
+
+    Include a `{"name": "Status Quo", "intervention": null}` entry to anchor the
+    comparison to the unmodified baseline.
+
+    Returns per-policy aggregate outcomes, deltas vs. baseline, and 95% CIs.
+    """
+    t0 = time.time()
+
+    segment = {}
+    if req.country_cluster: segment["country_cluster"] = req.country_cluster
+    if req.cpv_division:    segment["cpv_division"]    = req.cpv_division
+    if req.procedure_type:  segment["TOP_TYPE"]        = req.procedure_type
+    segment["year_from"] = req.year_from
+    segment["year_to"]   = req.year_to
+
+    policies = [
+        {
+            "name":         p.name,
+            "intervention": p.intervention.model_dump(exclude_none=True)
+                            if p.intervention else None,
+        }
+        for p in req.policies
+    ]
+
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        _twin.policy_compare,
+        segment_filters=segment,
+        policies=policies,
+        n_records=req.n_records,
+        seed=req.seed,
+    )
+    try:
+        result = await loop.run_in_executor(_blocking_executor, fn)
+    except Exception as exc:
+        logger.error("Policy compare error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal policy comparison error.")
+
+    if "error" in result:
+        return JSONResponse(status_code=200, content={
+            "error":     result["error"],
+            "n_matched": result.get("n_matched", 0),
+        })
+
+    result["meta"] = {
+        "duration_ms": round((time.time() - t0) * 1000, 1),
+        "timestamp":   datetime.utcnow().isoformat() + "Z",
+    }
+    return result
+
+
+@app.post(
+    "/advise",
+    tags=["V2 — AI Advisor"],
+    summary="AI Procurement Advisor",
+    dependencies=[Depends(require_api_key)],
+)
+def advise(req: AdviseRequest):
+    """
+    **V2 AI Advisor** — Generate actionable procurement design recommendations.
+
+    Combines simulation results, SHAP feature contributions, and rule-based
+    procurement expertise to produce structured advice with severity ratings.
+
+    If `ANTHROPIC_API_KEY` is configured and the `question` field is provided,
+    a Claude-powered narrative is added on top of the rule-based recommendations
+    (the tool always works without an API key).
+
+    Returns:
+    - `summary` — 2-sentence executive assessment
+    - `recommendations` — ranked list with severity (high / medium / low)
+    - `key_risks` — bulleted risk signals
+    - `strengths` — bulleted positive signals
+    - `llm_powered` — bool; `llm_narrative` present when True
+    """
+    if not _ADVISOR_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Advisor module unavailable. Check server logs.",
+        )
+
+    t0 = time.time()
+    params = req.params.to_twin_params()
+
+    try:
+        sim_result = _twin.simulate(params, n_samples=req.n_samples, seed=req.seed)
+    except Exception as exc:
+        logger.error("Advisor — simulation error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Simulation failed during advise.")
+
+    shap_result = None
+    if req.include_shap:
+        try:
+            shap_result = _twin.compute_shap(params)
+        except Exception as exc:
+            logger.warning("Advisor — SHAP error (non-fatal): %s", exc)
+
+    try:
+        advice = _advisor.advise(
+            params=params,
+            simulation_result=sim_result,
+            shap_result=shap_result,
+            question=req.question,
+        )
+    except Exception as exc:
+        logger.error("Advisor error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Advisor error.")
+
+    advice["simulation_summary"] = {
+        "competition":     round(sim_result["competition"]["mean"], 2),
+        "single_bid_risk": round(sim_result["single_bid_risk"]["probability"], 3),
+        "cross_border":    round(sim_result["cross_border"]["probability"], 3),
+        "price_ratio":     round(sim_result["price_ratio"]["mean"], 3),
+        "duration":        round(sim_result["duration"]["mean"], 1),
+    }
+    advice["meta"] = {
+        "duration_ms": round((time.time() - t0) * 1000, 1),
+        "timestamp":   datetime.utcnow().isoformat() + "Z",
+        "llm_available": _advisor._claude_available if _advisor else False,
+    }
+    simulation_history.record("/advise", params, (time.time() - t0) * 1000, 200)
+    return advice
 
 
 @app.post(
