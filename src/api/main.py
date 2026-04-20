@@ -538,7 +538,7 @@ def index():
         "v2_features": {
             "optimisation_engine": "Multi-objective Pareto optimisation over procedure parameters",
             "policy_lab":          "Side-by-side comparison of up to 5 policy interventions",
-            "ai_advisor":          "Structured procurement advice; Claude-powered if ANTHROPIC_API_KEY set",
+            "ai_advisor":          "Structured procurement advice; Mistral-7B-powered if AI_models (HF token) set",
         },
     }
 
@@ -1345,9 +1345,9 @@ def advise(req: AdviseRequest):
     Combines simulation results, SHAP feature contributions, and rule-based
     procurement expertise to produce structured advice with severity ratings.
 
-    If `ANTHROPIC_API_KEY` is configured and the `question` field is provided,
-    a Claude-powered narrative is added on top of the rule-based recommendations
-    (the tool always works without an API key).
+    If the `AI_models` Space secret (HuggingFace token) is configured,
+    a Mistral-7B-powered narrative is added on top of the rule-based recommendations
+    via the free HuggingFace Inference API (the tool always works without a token).
 
     Returns:
     - `summary` — 2-sentence executive assessment

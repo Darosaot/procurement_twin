@@ -2510,9 +2510,9 @@ def run_optimise(n_clicks, country, ctype, cpv, val, dur,
 # TAB 9: AI ADVISOR
 # ══════════════════════════════════════════════════════════════════
 def advisor_layout():
-    llm_note = ("🤖 Claude AI active — set ANTHROPIC_API_KEY for AI narrative"
-                if _ADVISOR_AVAILABLE and _advisor and _advisor._claude_available
-                else "⚙️ Rule-based advisor active (set ANTHROPIC_API_KEY for AI narrative)")
+    llm_note = ("🤖 Mistral AI active (mistralai/Mistral-7B-Instruct-v0.3)"
+                if _ADVISOR_AVAILABLE and _advisor and _advisor._hf_available
+                else "⚙️ Rule-based advisor active (set AI_models Space secret for AI narrative)")
 
     left = html.Div([
         html.H3("Procedure Parameters", style={"color":COL_NAVY,"fontSize":"14px","fontWeight":"700","margin":"0 0 12px 0","borderBottom":f"2px solid {COL_LIGHT}","paddingBottom":"6px"}),
