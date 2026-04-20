@@ -400,6 +400,7 @@ app.layout = html.Div([
         dcc.Tab(label="🏆  Optimisation Lab",      value="tab-optimise"),
         dcc.Tab(label="🧠  AI Advisor",            value="tab-advisor"),
         dcc.Tab(label="📊  Risk Radar",            value="tab-radar"),
+        dcc.Tab(label="⚙️  Model Admin",           value="tab-admin"),
     ]),
 
     html.Div(id="tab-content", style={"minHeight":"600px"}),
@@ -419,6 +420,7 @@ def render_tab(tab):
     if tab == "tab-optimise":    return optimise_layout()
     if tab == "tab-advisor":     return advisor_layout()
     if tab == "tab-radar":       return radar_layout()
+    if tab == "tab-admin":       return admin_layout()
     return html.Div("Unknown tab")
 
 
@@ -3079,6 +3081,304 @@ def radar_drilldown(click, proc, ctype, crit, pw, prep, dur, val, flags):
               "border":f"2px solid {COL_BLUE}"})
 
     return panel, {"display":"block","marginBottom":"14px"}
+
+
+# ══════════════════════════════════════════════════════════════════
+# MODEL ADMIN TAB
+# ══════════════════════════════════════════════════════════════════
+
+_ADMIN_MODELS = ["competition", "single_bid", "crossborder", "price_ratio", "duration"]
+_ADMIN_MODEL_LABELS = {
+    "competition":  "Competition (n_bids)",
+    "single_bid":   "Single-bid risk",
+    "crossborder":  "Cross-border win",
+    "price_ratio":  "Price ratio",
+    "duration":     "Duration (days)",
+}
+_CAL_MODELS = ["competition", "price_ratio"]  # only these have calibration offsets
+
+
+def admin_layout():
+    # ── Model evaluation table ────────────────────────────────────
+    try:
+        with open(os.path.join(MODEL_DIR, "model_evaluation.json")) as f:
+            ev = json.load(f)
+    except Exception:
+        ev = {}
+
+    metric_rows = []
+    for mk in _ADMIN_MODELS:
+        d = ev.get(mk, {})
+        metric_rows.append({
+            "Model":        _ADMIN_MODEL_LABELS.get(mk, mk),
+            "Type":         "Regression" if mk in ("competition","price_ratio","duration") else "Classifier",
+            "Train n":      f"{d.get('n_train', 'N/A'):,}" if isinstance(d.get('n_train'), int) else "N/A",
+            "Test n":       f"{d.get('n_test', 'N/A'):,}"  if isinstance(d.get('n_test'), int)  else "N/A",
+            "MAE / AUC":    f"{d.get('boost_mae', d.get('boost_auc', 'N/A')):.3f}"
+                            if isinstance(d.get('boost_mae', d.get('boost_auc')), float) else "N/A",
+            "R² / F1":      f"{d.get('boost_r2', d.get('boost_f1', 'N/A')):.3f}"
+                            if isinstance(d.get('boost_r2', d.get('boost_f1')), float) else "N/A",
+            "Baseline MAE": f"{d.get('baseline_mae', d.get('baseline_auc', 'N/A')):.3f}"
+                            if isinstance(d.get('baseline_mae', d.get('baseline_auc')), float) else "N/A",
+        })
+
+    col_style = {"textAlign":"left","padding":"8px 12px","fontSize":"13px"}
+    hdr_style = {**col_style,"backgroundColor":COL_NAVY,"color":"white","fontWeight":"700"}
+
+    def _th(label): return html.Th(label, style=hdr_style)
+    def _td(val, bold=False):
+        s = {**col_style}
+        if bold: s["fontWeight"] = "700"
+        return html.Td(val, style=s)
+
+    tbl_header = html.Tr([_th(c) for c in ["Model","Type","Train n","Test n","MAE / AUC","R² / F1","Baseline MAE"]])
+    tbl_body   = [html.Tr([
+        _td(r["Model"], bold=True), _td(r["Type"]), _td(r["Train n"]),
+        _td(r["Test n"]), _td(r["MAE / AUC"]), _td(r["R² / F1"]), _td(r["Baseline MAE"]),
+    ], style={"backgroundColor": COL_CARD if i%2==0 else "#f7f9fc"})
+    for i, r in enumerate(metric_rows)]
+
+    metrics_table = html.Table(
+        [html.Thead(tbl_header), html.Tbody(tbl_body)],
+        style={"width":"100%","borderCollapse":"collapse","borderRadius":"8px","overflow":"hidden"},
+    )
+
+    # ── SHAP section ──────────────────────────────────────────────
+    shap_section = html.Div([
+        html.H3("Feature Importance (SHAP)", style={"color":COL_NAVY,"fontSize":"15px",
+                "fontWeight":"700","margin":"0 0 10px 0"}),
+        html.Div([
+            html.Label("Select model:", style={"fontWeight":"600","fontSize":"13px"}),
+            dcc.Dropdown(
+                id="admin-shap-model",
+                options=[{"label": _ADMIN_MODEL_LABELS[m], "value": m} for m in _ADMIN_MODELS],
+                value="competition", clearable=False,
+                style={"width":"260px","display":"inline-block","marginLeft":"10px"},
+            ),
+        ], style={"marginBottom":"10px"}),
+        dcc.Graph(id="admin-shap-chart", style={"height":"320px"}),
+    ], style={"backgroundColor":COL_CARD,"borderRadius":"8px","padding":"18px",
+              "boxShadow":"0 2px 6px rgba(0,0,0,0.06)","marginBottom":"20px"})
+
+    # ── Calibration editor ────────────────────────────────────────
+    cal_section = html.Div([
+        html.H3("Calibration Offsets", style={"color":COL_NAVY,"fontSize":"15px",
+                "fontWeight":"700","margin":"0 0 4px 0"}),
+        html.P("Calibration offsets are applied in log space. Positive values raise predictions; "
+               "negative values lower them. Changes take effect immediately after saving — no "
+               "restart needed.", style={"fontSize":"12px","color":COL_GREY,"marginBottom":"12px"}),
+        html.Div([
+            html.Label("Select model:", style={"fontWeight":"600","fontSize":"13px"}),
+            dcc.Dropdown(
+                id="admin-cal-model",
+                options=[{"label": _ADMIN_MODEL_LABELS[m], "value": m} for m in _CAL_MODELS],
+                value="competition", clearable=False,
+                style={"width":"260px","display":"inline-block","marginLeft":"10px"},
+            ),
+        ], style={"marginBottom":"14px"}),
+
+        html.Div([
+            html.Div([
+                html.H4("By Country Cluster", style={"fontSize":"13px","fontWeight":"700",
+                        "color":COL_NAVY,"marginBottom":"8px"}),
+                html.Div(id="admin-cal-cluster-table"),
+            ], style={"flex":"1","marginRight":"20px"}),
+            html.Div([
+                html.H4("By CPV Division", style={"fontSize":"13px","fontWeight":"700",
+                        "color":COL_NAVY,"marginBottom":"8px"}),
+                html.Div(id="admin-cal-cpv-table"),
+            ], style={"flex":"1"}),
+        ], style={"display":"flex","gap":"10px","alignItems":"flex-start"}),
+
+        html.Div([
+            html.Button("💾  Save Calibration", id="admin-save-btn",
+                style={"backgroundColor":COL_NAVY,"color":"white","border":"none",
+                       "borderRadius":"6px","padding":"10px 22px","fontSize":"13px",
+                       "fontWeight":"600","cursor":"pointer","marginTop":"16px"}),
+            html.Div(id="admin-save-status", style={"display":"inline-block",
+                     "marginLeft":"14px","fontSize":"13px"}),
+        ]),
+        # Hidden stores for edited values
+        dcc.Store(id="admin-cluster-edits"),
+        dcc.Store(id="admin-cpv-edits"),
+    ], style={"backgroundColor":COL_CARD,"borderRadius":"8px","padding":"18px",
+              "boxShadow":"0 2px 6px rgba(0,0,0,0.06)","marginBottom":"20px"})
+
+    # ── Retraining guide ──────────────────────────────────────────
+    retrain_section = html.Div([
+        html.H3("Retraining Guide", style={"color":COL_NAVY,"fontSize":"15px",
+                "fontWeight":"700","margin":"0 0 10px 0"}),
+        html.P("Models are trained offline on the full TED dataset (1.1M contracts). "
+               "To retrain:", style={"fontSize":"13px","color":COL_GREY,"marginBottom":"8px"}),
+        html.Ol([
+            html.Li("Have data/features/procedure_records.parquet on your local machine."),
+            html.Li(html.Span([
+                "Run the retrain script: ",
+                html.Code("python retrain_<model>.py", style={"backgroundColor":"#f0f4f8",
+                          "padding":"2px 6px","borderRadius":"4px","fontFamily":"monospace"}),
+            ])),
+            html.Li(html.Span([
+                "Upload artifacts: ",
+                html.Code("python upload_to_hf.py", style={"backgroundColor":"#f0f4f8",
+                          "padding":"2px 6px","borderRadius":"4px","fontFamily":"monospace"}),
+            ])),
+            html.Li("Restart the HuggingFace Space — it will pull the new .pkl files at startup."),
+        ], style={"fontSize":"13px","color":"#333","lineHeight":"1.8","paddingLeft":"20px"}),
+        html.P("Calibration offset edits (above) take effect immediately without retraining — "
+               "use them for minor bias corrections between full retraining cycles.",
+               style={"fontSize":"12px","color":COL_GREY,"marginTop":"10px"}),
+    ], style={"backgroundColor":"#fff9e6","borderRadius":"8px","padding":"18px",
+              "border":"1px solid #ffe58f","marginBottom":"20px"})
+
+    return html.Div([
+        html.H2("⚙️ Model Administration", style={"color":COL_NAVY,"fontSize":"20px",
+                "fontWeight":"700","margin":"0 0 20px 0"}),
+
+        html.Div([
+            html.H3("Model Health Metrics", style={"color":COL_NAVY,"fontSize":"15px",
+                    "fontWeight":"700","margin":"0 0 12px 0"}),
+            metrics_table,
+        ], style={"backgroundColor":COL_CARD,"borderRadius":"8px","padding":"18px",
+                  "boxShadow":"0 2px 6px rgba(0,0,0,0.06)","marginBottom":"20px"}),
+
+        shap_section,
+        cal_section,
+        retrain_section,
+    ], style={"maxWidth":"1200px","margin":"0 auto","padding":"24px"})
+
+
+@app.callback(Output("admin-shap-chart","figure"), Input("admin-shap-model","value"))
+def admin_shap_chart(model_key):
+    try:
+        with open(os.path.join(MODEL_DIR, "shap_importances.json")) as f:
+            shap_all = json.load(f)
+    except Exception:
+        return go.Figure()
+
+    shap = shap_all.get(model_key, {})
+    if not shap:
+        return go.Figure(layout={"title":"No SHAP data available for this model"})
+
+    items = sorted(shap.items(), key=lambda x: x[1], reverse=True)[:20]
+    feats, vals = zip(*items) if items else ([], [])
+    feats = [f.replace("ISO_COUNTRY_CODE_","Country: ").replace("country_cluster_","Cluster: ")
+               .replace("TOP_TYPE_","Proc: ").replace("TYPE_OF_CONTRACT_","Type: ")
+               .replace("CRIT_CODE_","Criteria: ").replace("value_bracket_","Value: ")
+               .replace("cpv_division_","CPV: ") for f in feats]
+
+    fig = go.Figure(go.Bar(
+        x=list(vals), y=list(feats), orientation="h",
+        marker_color=COL_BLUE,
+        hovertemplate="%{y}: %{x:.4f}<extra></extra>",
+    ))
+    fig.update_layout(
+        title=f"Top 20 features — {_ADMIN_MODEL_LABELS.get(model_key, model_key)} (mean |SHAP|)",
+        yaxis={"autorange":"reversed","tickfont":{"size":11}},
+        xaxis={"title":"Mean |SHAP value|"},
+        margin={"l":200,"r":20,"t":40,"b":40},
+        plot_bgcolor="white", paper_bgcolor="white",
+        height=320,
+    )
+    return fig
+
+
+def _cal_table_html(data_dict, table_id):
+    """Render an editable-looking calibration table as HTML with input fields."""
+    if not data_dict:
+        return html.P("No calibration data available.", style={"fontSize":"12px","color":COL_GREY})
+
+    hdr = html.Tr([
+        html.Th("Segment", style={"padding":"6px 10px","backgroundColor":COL_NAVY,
+                "color":"white","fontSize":"12px","fontWeight":"700","textAlign":"left"}),
+        html.Th("Offset", style={"padding":"6px 10px","backgroundColor":COL_NAVY,
+                "color":"white","fontSize":"12px","fontWeight":"700","textAlign":"right"}),
+    ])
+    rows = []
+    for i, (seg, val) in enumerate(sorted(data_dict.items())):
+        bg = COL_CARD if i % 2 == 0 else "#f7f9fc"
+        col = COL_GREEN if val > 0 else (COL_RED if val < 0 else COL_GREY)
+        rows.append(html.Tr([
+            html.Td(seg, style={"padding":"5px 10px","fontSize":"12px","fontWeight":"600"}),
+            html.Td(
+                dcc.Input(
+                    id={"type": table_id, "index": seg},
+                    value=round(val, 4), type="number", debounce=True,
+                    style={"width":"80px","textAlign":"right","fontSize":"12px",
+                           "border":"1px solid #ccc","borderRadius":"4px","padding":"2px 6px",
+                           "color": col},
+                ),
+                style={"padding":"3px 10px","textAlign":"right"},
+            ),
+        ], style={"backgroundColor": bg}))
+
+    return html.Table(
+        [html.Thead(hdr), html.Tbody(rows)],
+        style={"width":"100%","borderCollapse":"collapse","fontSize":"12px"},
+    )
+
+
+@app.callback(
+    Output("admin-cal-cluster-table","children"),
+    Output("admin-cal-cpv-table","children"),
+    Input("admin-cal-model","value"),
+)
+def admin_cal_tables(model_key):
+    try:
+        with open(os.path.join(MODEL_DIR, "calibration_offsets.json")) as f:
+            cal = json.load(f)
+    except Exception:
+        cal = {}
+
+    m = cal.get(model_key, {})
+    cluster_data = m.get("by_cluster", {})
+    cpv_data     = m.get("by_cpv", {})
+
+    return (
+        _cal_table_html(cluster_data, "admin-cluster-input"),
+        _cal_table_html(cpv_data,     "admin-cpv-input"),
+    )
+
+
+@app.callback(
+    Output("admin-save-status","children"),
+    Input("admin-save-btn","n_clicks"),
+    State("admin-cal-model","value"),
+    State({"type":"admin-cluster-input","index":dash.ALL},"value"),
+    State({"type":"admin-cluster-input","index":dash.ALL},"id"),
+    State({"type":"admin-cpv-input","index":dash.ALL},"value"),
+    State({"type":"admin-cpv-input","index":dash.ALL},"id"),
+    prevent_initial_call=True,
+)
+def admin_save_calibration(n_clicks, model_key, cluster_vals, cluster_ids,
+                           cpv_vals, cpv_ids):
+    if not n_clicks:
+        return ""
+    try:
+        cal_path = os.path.join(MODEL_DIR, "calibration_offsets.json")
+        with open(cal_path) as f:
+            cal = json.load(f)
+
+        if model_key not in cal:
+            cal[model_key] = {"by_cluster": {}, "by_cpv": {}}
+
+        for id_obj, val in zip(cluster_ids, cluster_vals):
+            seg = id_obj["index"]
+            cal[model_key]["by_cluster"][seg] = float(val) if val is not None else 0.0
+
+        for id_obj, val in zip(cpv_ids, cpv_vals):
+            seg = id_obj["index"]
+            cal[model_key]["by_cpv"][seg] = float(val) if val is not None else 0.0
+
+        with open(cal_path, "w") as f:
+            json.dump(cal, f, indent=2)
+
+        # Hot-reload into running twin instance
+        twin._calibration = cal
+
+        return html.Span("✅ Saved and applied.", style={"color":COL_GREEN,"fontWeight":"600"})
+
+    except Exception as e:
+        return html.Span(f"❌ Error: {e}", style={"color":COL_RED,"fontWeight":"600"})
 
 
 # ══════════════════════════════════════════════════════════════════
