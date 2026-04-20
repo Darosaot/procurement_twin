@@ -259,9 +259,11 @@ class ProcurementTwin:
         cluster = COUNTRY_CLUSTERS.get(params.get("country", "DE"), "Other")
 
         # ── Stage 1: Competition ──────────────────────────────────
-        comp_pred = float(self.competition_mdl["model"].predict(X)[0])
+        # Model is trained on log1p(n_bids), so predict() returns log1p-space values.
+        # Apply calibration directly in log space, then convert back to bid counts.
+        comp_pred_log = max(float(self.competition_mdl["model"].predict(X)[0]), np.log1p(0.5))
         comp_cal  = self._get_calibration_offset("competition", cpv, cluster)
-        comp_pred = float(np.expm1(np.log1p(max(comp_pred, 0.5)) + comp_cal))
+        comp_pred = float(np.expm1(comp_pred_log + comp_cal))
 
         log_pred  = np.log1p(comp_pred)
         log_noise = self._comp_meta["log_std"] * 0.6
