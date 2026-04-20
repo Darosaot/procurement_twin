@@ -1,0 +1,109 @@
+name: Quarterly Model Retrain
+
+# Runs automatically on the 1st of January, April, July, October (quarterly).
+# Can also be triggered manually from the GitHub Actions UI with optional controls.
+on:
+  schedule:
+    - cron: "0 6 1 1,4,7,10 *"   # 06:00 UTC on the 1st of each quarter
+
+  workflow_dispatch:
+    inputs:
+      skip_download:
+        description: "Skip data download (reuse cached data)"
+        type: boolean
+        default: false
+      skip_upload:
+        description: "Skip upload to HF Hub (dry-run)"
+        type: boolean
+        default: false
+      years:
+        description: "Specific years to download (space-separated, e.g. 2023 2024). Leave blank for combined 2018-2023."
+        required: false
+        default: ""
+
+jobs:
+  retrain:
+    name: Download → Feature engineering → Train → Upload
+    runs-on: ubuntu-latest
+    timeout-minutes: 180   # 3-hour cap; full pipeline ~60–90 min
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python environment ─────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 3. Cache raw TED data between runs ───────────────────────
+      - name: Cache downloaded TED data
+        id: cache-ted
+        uses: actions/cache@v4
+        with:
+          path: "Procurement data"
+          key: ted-csv-${{ github.run_id }}
+          restore-keys: |
+            ted-csv-
+
+      # ── 4. Build CLI arguments ────────────────────────────────────
+      - name: Build pipeline arguments
+        id: args
+        run: |
+          EXTRA=""
+          if [ "${{ inputs.skip_download }}" = "true" ]; then
+            EXTRA="$EXTRA --skip-download"
+          fi
+          if [ "${{ inputs.skip_upload }}" = "true" ]; then
+            EXTRA="$EXTRA --skip-upload"
+          fi
+          if [ -n "${{ inputs.years }}" ]; then
+            EXTRA="$EXTRA --years ${{ inputs.years }}"
+          fi
+          echo "extra=$EXTRA" >> "$GITHUB_OUTPUT"
+
+      # ── 5. Run the full pipeline ──────────────────────────────────
+      - name: Run pipeline
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python pipeline/run_pipeline.py ${{ steps.args.outputs.extra }}
+
+      # ── 6. Upload pipeline log as artifact ───────────────────────
+      - name: Upload pipeline status log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-status-${{ github.run_id }}
+          path: pipeline_status.json
+          if-no-files-found: ignore
+
+      # ── 7. Post summary ───────────────────────────────────────────
+      - name: Post pipeline summary
+        if: always()
+        run: |
+          python - <<'EOF'
+          import json, sys
+          try:
+              with open("pipeline_status.json") as f:
+                  st = json.load(f)
+              status = st.get("status", "unknown")
+              started = st.get("started_at", "?")
+              finished = st.get("finished_at", "?")
+              error = st.get("error", "")
+              print(f"## Pipeline result: {status.upper()}")
+              print(f"- Started:  {started}")
+              print(f"- Finished: {finished}")
+              if error:
+                  print(f"- Error: {error}")
+                  sys.exit(1)
+          except FileNotFoundError:
+              print("pipeline_status.json not found")
+              sys.exit(1)
+          EOF

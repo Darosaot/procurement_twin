@@ -22,8 +22,10 @@ for _p in [_PROJECT_ROOT, _SRC_DIR]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-FEAT_DIR  = os.environ.get("FEAT_DIR",  os.path.join(_PROJECT_ROOT, "data", "features"))
-MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(_PROJECT_ROOT, "models"))
+FEAT_DIR          = os.environ.get("FEAT_DIR",  os.path.join(_PROJECT_ROOT, "data", "features"))
+MODEL_DIR         = os.environ.get("MODEL_DIR", os.path.join(_PROJECT_ROOT, "models"))
+_PIPELINE_STATUS  = os.path.join(_PROJECT_ROOT, "pipeline_status.json")
+_PIPELINE_SCRIPT  = os.path.join(_PROJECT_ROOT, "pipeline", "run_pipeline.py")
 
 import dash
 from dash import dcc, html, Input, Output, State, ctx
@@ -3204,31 +3206,88 @@ def admin_layout():
     ], style={"backgroundColor":COL_CARD,"borderRadius":"8px","padding":"18px",
               "boxShadow":"0 2px 6px rgba(0,0,0,0.06)","marginBottom":"20px"})
 
-    # ── Retraining guide ──────────────────────────────────────────
-    retrain_section = html.Div([
-        html.H3("Retraining Guide", style={"color":COL_NAVY,"fontSize":"15px",
-                "fontWeight":"700","margin":"0 0 10px 0"}),
-        html.P("Models are trained offline on the full TED dataset (1.1M contracts). "
-               "To retrain:", style={"fontSize":"13px","color":COL_GREY,"marginBottom":"8px"}),
-        html.Ol([
-            html.Li("Have data/features/procedure_records.parquet on your local machine."),
-            html.Li(html.Span([
-                "Run the retrain script: ",
-                html.Code("python retrain_<model>.py", style={"backgroundColor":"#f0f4f8",
-                          "padding":"2px 6px","borderRadius":"4px","fontFamily":"monospace"}),
-            ])),
-            html.Li(html.Span([
-                "Upload artifacts: ",
-                html.Code("python upload_to_hf.py", style={"backgroundColor":"#f0f4f8",
-                          "padding":"2px 6px","borderRadius":"4px","fontFamily":"monospace"}),
-            ])),
-            html.Li("Restart the HuggingFace Space — it will pull the new .pkl files at startup."),
-        ], style={"fontSize":"13px","color":"#333","lineHeight":"1.8","paddingLeft":"20px"}),
-        html.P("Calibration offset edits (above) take effect immediately without retraining — "
-               "use them for minor bias corrections between full retraining cycles.",
-               style={"fontSize":"12px","color":COL_GREY,"marginTop":"10px"}),
-    ], style={"backgroundColor":"#fff9e6","borderRadius":"8px","padding":"18px",
-              "border":"1px solid #ffe58f","marginBottom":"20px"})
+    # ── Pipeline panel ────────────────────────────────────────────
+    _code = lambda t: html.Code(t, style={"backgroundColor":"#f0f4f8","padding":"2px 6px",
+                                          "borderRadius":"4px","fontFamily":"monospace","fontSize":"12px"})
+    _step_labels = ["Download TED data","CFC–CAN linkage","Feature engineering",
+                    "Train models","Upload to HF Hub"]
+
+    pipeline_section = html.Div([
+        html.H3("🔄 Download & Retrain Pipeline", style={"color":COL_NAVY,"fontSize":"15px",
+                "fontWeight":"700","margin":"0 0 6px 0"}),
+        html.P([
+            "Downloads fresh TED CSV data directly from the ",
+            html.A("EU Open Data Portal", href="https://data.europa.eu/data/datasets/ted-csv",
+                   target="_blank", style={"color":COL_BLUE}),
+            ", rebuilds the feature store, retrains all 5 models, and uploads artifacts to "
+            "HuggingFace Hub. Best run locally or via GitHub Actions (see below).",
+        ], style={"fontSize":"12px","color":COL_GREY,"marginBottom":"14px"}),
+
+        # Controls row
+        html.Div([
+            html.Div([
+                html.Label("Data years:", style={"fontSize":"12px","fontWeight":"600",
+                           "display":"block","marginBottom":"4px"}),
+                dcc.RadioItems(
+                    id="pipe-years-mode",
+                    options=[
+                        {"label":" Combined 2018–2023 (recommended)", "value":"combined"},
+                        {"label":" Custom range",                      "value":"custom"},
+                    ],
+                    value="combined", className="radio-block",
+                    style={"fontSize":"12px"},
+                ),
+                html.Div([
+                    dcc.RangeSlider(
+                        id="pipe-year-range", min=2018, max=2024, step=1,
+                        value=[2022, 2023],
+                        marks={y: str(y) for y in range(2018, 2025)},
+                        tooltip={"always_visible": False},
+                    ),
+                ], id="pipe-year-range-row", style={"display":"none","marginTop":"8px"}),
+            ], style={"flex":"1","marginRight":"24px"}),
+
+            html.Div([
+                html.Label("Steps to run:", style={"fontSize":"12px","fontWeight":"600",
+                           "display":"block","marginBottom":"4px"}),
+                dcc.Checklist(
+                    id="pipe-steps",
+                    options=[{"label":f" {l}", "value": v}
+                             for v, l in zip(["download","linkage","features","train","upload"],
+                                             _step_labels)],
+                    value=["download","linkage","features","train","upload"],
+                    style={"fontSize":"12px","lineHeight":"1.8"},
+                ),
+            ], style={"flex":"1"}),
+        ], style={"display":"flex","marginBottom":"14px"}),
+
+        # Start / cancel buttons
+        html.Div([
+            html.Button("▶  Start Pipeline", id="pipe-start-btn",
+                style={"backgroundColor":COL_NAVY,"color":"white","border":"none",
+                       "borderRadius":"6px","padding":"9px 20px","fontSize":"13px",
+                       "fontWeight":"600","cursor":"pointer","marginRight":"10px"}),
+            html.Span(id="pipe-btn-status", style={"fontSize":"12px","color":COL_GREY}),
+        ], style={"marginBottom":"14px"}),
+
+        # Step progress indicators
+        html.Div(id="pipe-step-indicators", style={"marginBottom":"10px"}),
+
+        # Live log viewer
+        html.Div(
+            html.Pre(id="pipe-log", children="No pipeline run yet.",
+                style={"margin":"0","fontSize":"11px","lineHeight":"1.5",
+                       "fontFamily":"monospace","color":"#cdd3d8"}),
+            style={"backgroundColor":"#1e2328","borderRadius":"6px","padding":"12px",
+                   "maxHeight":"280px","overflowY":"auto","border":"1px solid #333"},
+        ),
+
+        # Polling interval (only active while pipeline running)
+        dcc.Interval(id="pipe-poll", interval=3000, disabled=True),
+        dcc.Store(id="pipe-running-store", data=False),
+
+    ], style={"backgroundColor":COL_CARD,"borderRadius":"8px","padding":"18px",
+              "boxShadow":"0 2px 6px rgba(0,0,0,0.06)","marginBottom":"20px"})
 
     return html.Div([
         html.H2("⚙️ Model Administration", style={"color":COL_NAVY,"fontSize":"20px",
@@ -3243,7 +3302,7 @@ def admin_layout():
 
         shap_section,
         cal_section,
-        retrain_section,
+        pipeline_section,
     ], style={"maxWidth":"1200px","margin":"0 auto","padding":"24px"})
 
 
@@ -3379,6 +3438,118 @@ def admin_save_calibration(n_clicks, model_key, cluster_vals, cluster_ids,
 
     except Exception as e:
         return html.Span(f"❌ Error: {e}", style={"color":COL_RED,"fontWeight":"600"})
+
+
+# ── Pipeline callbacks ─────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("pipe-year-range-row","style"),
+    Input("pipe-years-mode","value"),
+)
+def pipe_toggle_year_range(mode):
+    return {"display":"block","marginTop":"8px"} if mode == "custom" else {"display":"none"}
+
+
+@app.callback(
+    Output("pipe-running-store","data"),
+    Output("pipe-btn-status","children"),
+    Output("pipe-poll","disabled"),
+    Input("pipe-start-btn","n_clicks"),
+    State("pipe-years-mode","value"),
+    State("pipe-year-range","value"),
+    State("pipe-steps","value"),
+    State("pipe-running-store","data"),
+    prevent_initial_call=True,
+)
+def pipe_start(n_clicks, years_mode, year_range, steps, already_running):
+    if already_running:
+        return True, "Pipeline already running…", False
+
+    # Read current status — don't start if already running
+    try:
+        with open(_PIPELINE_STATUS) as f:
+            current = json.load(f)
+        if current.get("status") == "running":
+            return True, "Already running — check logs below.", False
+    except Exception:
+        pass
+
+    # Build kwargs for run_pipeline_async
+    from pipeline.run_pipeline import run_pipeline_async
+    kwargs = {"step_ids": steps or None}
+    if years_mode == "custom" and year_range:
+        kwargs["download_years"] = list(range(int(year_range[0]), int(year_range[1]) + 1))
+
+    run_pipeline_async(**kwargs)
+    return True, "Pipeline started…", False
+
+
+@app.callback(
+    Output("pipe-log","children"),
+    Output("pipe-step-indicators","children"),
+    Output("pipe-poll","disabled", allow_duplicate=True),
+    Output("pipe-running-store","data", allow_duplicate=True),
+    Output("pipe-btn-status","children", allow_duplicate=True),
+    Input("pipe-poll","n_intervals"),
+    prevent_initial_call=True,
+)
+def pipe_poll_status(n_intervals):
+    _step_ids    = ["download","linkage","features","train","upload"]
+    _step_labels = ["Download TED data","CFC–CAN linkage","Feature engineering",
+                    "Train models","Upload to HF Hub"]
+
+    try:
+        with open(_PIPELINE_STATUS) as f:
+            st = json.load(f)
+    except Exception:
+        return ("No pipeline run yet.", [], True, False, "")
+
+    status    = st.get("status", "idle")
+    cur_step  = st.get("step")
+    step_idx  = st.get("step_idx", 0)
+    logs      = st.get("logs", [])
+    error_msg = st.get("error")
+
+    # Step progress pills
+    def _pill(label, state):
+        colors = {"done": COL_GREEN, "active": COL_ORANGE, "pending": COL_GREY, "error": COL_RED}
+        icons  = {"done":"✓ ","active":"⟳ ","pending":"○ ","error":"✗ "}
+        bg     = {"done":"#e6f4ea","active":"#fff3cd","pending":"#f0f4f8","error":"#fde8e8"}
+        return html.Span(f"{icons[state]}{label}",
+            style={"backgroundColor":bg[state],"color":colors[state],"borderRadius":"12px",
+                   "padding":"3px 10px","fontSize":"11px","fontWeight":"600",
+                   "marginRight":"6px","display":"inline-block","marginBottom":"4px"})
+
+    pills = []
+    for i, (sid, slabel) in enumerate(zip(_step_ids, _step_labels)):
+        if status == "done":
+            state = "done"
+        elif status == "error" and cur_step == sid:
+            state = "error"
+        elif i < step_idx - 1:
+            state = "done"
+        elif i == step_idx - 1 and status == "running":
+            state = "active"
+        else:
+            state = "pending"
+        pills.append(_pill(slabel, state))
+
+    # Log text
+    log_text = "\n".join(logs[-200:]) if logs else "Waiting for output…"
+
+    # Determine if we should stop polling
+    done = status in ("done", "error", "idle")
+
+    if status == "done":
+        btn_status = f"✅ Complete — finished at {st.get('finished_at','')}"
+    elif status == "error":
+        btn_status = f"❌ {error_msg or 'Pipeline failed'}"
+    elif status == "running":
+        btn_status = f"⟳ Running: {st.get('step_label','')} (step {step_idx}/{st.get('total_steps',5)})"
+    else:
+        btn_status = ""
+
+    return log_text, pills, done, not done, btn_status
 
 
 # ══════════════════════════════════════════════════════════════════
