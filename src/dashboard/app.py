@@ -2665,117 +2665,420 @@ def run_advisor(n_clicks, country, proc, ctype, cpv, crit, pw, val, prep, dur, f
 
 
 # ══════════════════════════════════════════════════════════════════
-# TAB 10: RISK RADAR
+# TAB 10: RISK RADAR  (interactive v2)
 # ══════════════════════════════════════════════════════════════════
+
+# Module-level constants reused by layout + callbacks
+_RADAR_CLUSTERS = ["CEE","Germanic","Western","Nordic","Mediterranean",
+                   "Iberian","Baltic","Benelux","Anglophone","Balkan"]
+_RADAR_CPVS     = ["45","72","33","48","71","60","79","85","39","31"]
+_CPV_SHORT      = {"45":"Construction","72":"IT Services","33":"Medical","48":"Software",
+                   "71":"Architecture","60":"Transport","79":"Business Svc","85":"Health",
+                   "39":"Furniture","31":"Electrical"}
+_CLUSTER_COUNTRY= {"CEE":"PL","Germanic":"DE","Western":"FR","Nordic":"SE",
+                   "Mediterranean":"GR","Iberian":"ES","Baltic":"LT",
+                   "Benelux":"BE","Anglophone":"IE","Balkan":"HR"}
+_RADAR_METRICS  = {
+    "single_bid_risk": {
+        "label":"Single-bid risk","fmt":".0%",
+        "cscale":[[0,"#D5E8F0"],[0.35,"#FFD700"],[0.65,"#FF8C00"],[1.0,"#C00000"]],
+        "zmin":0,"zmax":0.6,"unit":"%","better":"lower",
+        "extract": lambda s: s["single_bid_risk"]["probability"],
+    },
+    "competition": {
+        "label":"Expected bids","fmt":".1f",
+        "cscale":[[0,"#C00000"],[0.35,"#FF8C00"],[0.65,"#FFD700"],[1.0,"#217346"]],
+        "zmin":1,"zmax":8,"unit":"bids","better":"higher",
+        "extract": lambda s: s["competition"]["mean"],
+    },
+    "cross_border": {
+        "label":"Cross-border win","fmt":".0%",
+        "cscale":[[0,"#C00000"],[0.4,"#FFD700"],[1.0,"#217346"]],
+        "zmin":0,"zmax":0.25,"unit":"%","better":"higher",
+        "extract": lambda s: s["cross_border"]["probability"],
+    },
+    "price_ratio": {
+        "label":"Price ratio","fmt":".2f",
+        "cscale":[[0,"#217346"],[0.4,"#FFD700"],[0.7,"#FF8C00"],[1.0,"#C00000"]],
+        "zmin":0.7,"zmax":1.3,"unit":"×","better":"lower",
+        "extract": lambda s: s["price_ratio"]["mean"],
+    },
+    "duration": {
+        "label":"Duration (days)","fmt":".0f",
+        "cscale":[[0,"#D5E8F0"],[0.4,"#FFD700"],[0.7,"#FF8C00"],[1.0,"#C00000"]],
+        "zmin":60,"zmax":320,"unit":"d","better":"lower",
+        "extract": lambda s: s["duration"]["mean"],
+    },
+}
+
+
 def radar_layout():
-    RADAR_CLUSTERS = ["CEE","Germanic","Western","Nordic","Mediterranean","Iberian","Baltic","Benelux","Anglophone","Balkan"]
-    RADAR_CPVS     = ["45","72","33","48","71","60","79","85","39","31"]
-    CPV_SHORT      = {"45":"Construction","72":"IT Services","33":"Medical","48":"Software",
-                      "71":"Architecture","60":"Transport","79":"Business Svc","85":"Health",
-                      "39":"Furniture","31":"Electrical"}
+    metric_opts = [{"label": v["label"], "value": k} for k, v in _RADAR_METRICS.items()]
 
-    # Compute risk grid via simulation (fast — no MC noise, point estimates)
-    grid_sb   = np.zeros((len(RADAR_CLUSTERS), len(RADAR_CPVS)))
-    grid_comp = np.zeros((len(RADAR_CLUSTERS), len(RADAR_CPVS)))
+    left = html.Div([
+        html.H3("Procedure Context", style={"color":COL_NAVY,"fontSize":"14px","fontWeight":"700","margin":"0 0 12px 0","borderBottom":f"2px solid {COL_LIGHT}","paddingBottom":"6px"}),
+        _form_row("Procedure type", dcc.RadioItems(id="radar-proc",
+            options=[{"label":" Open","value":"OPE"},{"label":" Restricted","value":"RES"},{"label":" Negotiated","value":"NIC"}],
+            value="OPE", className="radio-block")),
+        _form_row("Contract type", dcc.RadioItems(id="radar-ctype",
+            options=CONTRACT_OPTIONS, value="S", inline=True, className="radio-inline")),
+        _form_row("Award criteria", dcc.RadioItems(id="radar-crit",
+            options=CRITERIA_OPTIONS, value="M", className="radio-block")),
+        _form_row("Price weight (%)", dcc.Slider(id="radar-pw", min=0, max=100, step=10,
+            value=50, marks={0:"0%",50:"50%",100:"100%"},
+            tooltip={"placement":"bottom","always_visible":True})),
+        _form_row("Preparation time (days)", dcc.Slider(id="radar-prep", min=15, max=90, step=1,
+            value=35, marks={15:"15",35:"35",52:"52",90:"90"},
+            tooltip={"placement":"bottom","always_visible":True})),
+        _form_row("Contract duration (months)", dcc.Slider(id="radar-dur", min=3, max=60, step=3,
+            value=24, marks={3:"3m",12:"1yr",24:"2yr",60:"5yr"},
+            tooltip={"placement":"bottom","always_visible":True})),
+        _form_row("Estimated value (€)", dcc.Dropdown(id="radar-val",
+            options=[
+                {"label":"< €135k",       "value":"50000"},
+                {"label":"€135k – €215k", "value":"175000"},
+                {"label":"€215k – €431k", "value":"323000"},
+                {"label":"€431k – €5M",   "value":"500000"},
+                {"label":"€5M – €50M",    "value":"10000000"},
+                {"label":"> €50M",        "value":"75000000"},
+            ], value="500000", clearable=False)),
+        _form_row("Flags", dcc.Checklist(id="radar-flags",
+            options=[{"label":" EU funds","value":"eu_funds"},
+                     {"label":" GPA","value":"gpa"},
+                     {"label":" E-auction","value":"ea"},
+                     {"label":" Framework","value":"fra"}],
+            value=[], className="checklist")),
 
-    CLUSTER_COUNTRY = {"CEE":"PL","Germanic":"DE","Western":"FR","Nordic":"SE",
-                       "Mediterranean":"GR","Iberian":"ES","Baltic":"LT",
-                       "Benelux":"BE","Anglophone":"IE","Balkan":"HR"}
+        html.H3("Display", style={"color":COL_NAVY,"fontSize":"14px","fontWeight":"700","margin":"18px 0 12px 0","borderBottom":f"2px solid {COL_LIGHT}","paddingBottom":"6px"}),
+        _form_row("Primary metric", dcc.Dropdown(id="radar-metric", options=metric_opts,
+            value="single_bid_risk", clearable=False)),
 
-    for i, cluster in enumerate(RADAR_CLUSTERS):
-        country = CLUSTER_COUNTRY.get(cluster, "DE")
-        for j, cpv in enumerate(RADAR_CPVS):
+        html.Button("🔄  Update Radar", id="radar-btn", n_clicks=0, className="btn-primary"),
+        html.Div(id="radar-status", style={"fontSize":"12px","color":COL_BLUE,"marginTop":"10px","fontStyle":"italic"}),
+    ], style={"width":"270px","flexShrink":"0","backgroundColor":COL_CARD,"borderRadius":"10px",
+              "padding":"20px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","overflowY":"auto","maxHeight":"90vh"})
+
+    right = html.Div([
+        # KPI row
+        html.Div(id="radar-kpis", style={"display":"flex","gap":"12px","marginBottom":"16px"}),
+        # Primary heatmap
+        html.Div([dcc.Graph(id="radar-heatmap", config={"displayModeBar":False})],
+                 style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px",
+                        "boxShadow":"0 2px 8px rgba(0,0,0,0.07)","marginBottom":"14px"}),
+        # Scatter + Top-10 side by side
+        html.Div([
+            html.Div([dcc.Graph(id="radar-scatter", config={"displayModeBar":False})],
+                     style={"flex":"1","backgroundColor":COL_CARD,"borderRadius":"10px",
+                            "padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)"}),
+            html.Div([dcc.Graph(id="radar-bar", config={"displayModeBar":False})],
+                     style={"flex":"1","backgroundColor":COL_CARD,"borderRadius":"10px",
+                            "padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)"}),
+        ], style={"display":"flex","gap":"14px","marginBottom":"14px"}),
+        # Drill-down panel (hidden until cell clicked)
+        html.Div(id="radar-drilldown", style={"display":"none"}),
+    ], style={"flex":"1","minWidth":"0","overflowY":"auto","maxHeight":"90vh","paddingLeft":"20px"})
+
+    return html.Div([left, right],
+                    style={"display":"flex","gap":"0","padding":"20px","alignItems":"flex-start"})
+
+
+@app.callback(
+    Output("radar-kpis",    "children"),
+    Output("radar-heatmap", "figure"),
+    Output("radar-scatter", "figure"),
+    Output("radar-bar",     "figure"),
+    Output("radar-status",  "children"),
+    Input("radar-btn",  "n_clicks"),
+    State("radar-proc", "value"), State("radar-ctype","value"),
+    State("radar-crit", "value"), State("radar-pw",   "value"),
+    State("radar-prep", "value"), State("radar-dur",  "value"),
+    State("radar-val",  "value"), State("radar-flags","value"),
+    State("radar-metric","value"),
+)
+def update_radar_charts(n_clicks, proc, ctype, crit, pw, prep, dur, val, flags, metric):
+    flags  = flags or []
+    val_f  = float(val or 500_000)
+    mconf  = _RADAR_METRICS[metric]
+
+    # Build base params template (country + CPV will be overridden per cell)
+    base = {
+        "procedure_type":    proc or "OPE",
+        "contract_type":     ctype or "S",
+        "criteria":          crit or "M",
+        "price_weight_pct":  float(pw or 50),
+        "prep_time_days":    float(prep or 35),
+        "duration_months":   float(dur or 24),
+        "value_euro":        val_f,
+        "gpa":               "gpa"    in flags,
+        "eu_funds":          "eu_funds" in flags,
+        "fra_agreement":     "fra"    in flags,
+        "electronic_auction":"ea"     in flags,
+        "accelerated":       False,
+    }
+
+    # Simulate 10×10 grid
+    n_cl  = len(_RADAR_CLUSTERS)
+    n_cpv = len(_RADAR_CPVS)
+    grids = {k: np.full((n_cl, n_cpv), float("nan")) for k in _RADAR_METRICS}
+
+    for i, cluster in enumerate(_RADAR_CLUSTERS):
+        country = _CLUSTER_COUNTRY.get(cluster, "DE")
+        for j, cpv in enumerate(_RADAR_CPVS):
             try:
-                sim = twin.simulate({"country":country,"procedure_type":"OPE",
-                                     "contract_type":"S","cpv_division":cpv,
-                                     "criteria":"M","price_weight_pct":50,
-                                     "value_euro":500_000,"prep_time_days":35,
-                                     "duration_months":24}, n_samples=300, seed=42)
-                grid_sb[i,j]   = sim["single_bid_risk"]["probability"]
-                grid_comp[i,j] = sim["competition"]["mean"]
+                sim = twin.simulate({**base, "country": country, "cpv_division": cpv},
+                                    n_samples=200, seed=42)
+                for k, mc in _RADAR_METRICS.items():
+                    grids[k][i, j] = mc["extract"](sim)
             except Exception:
-                grid_sb[i,j]   = float("nan")
-                grid_comp[i,j] = float("nan")
+                pass
 
-    # Single-bid risk heatmap
-    fig_sb = go.Figure(go.Heatmap(
-        z=grid_sb.tolist(),
-        x=[CPV_SHORT.get(c,c) for c in RADAR_CPVS],
-        y=RADAR_CLUSTERS,
-        colorscale=[[0,"#D5E8F0"],[0.4,"#FFD700"],[0.7,"#FF8C00"],[1.0,"#C00000"]],
-        zmin=0, zmax=0.6,
-        text=[[f"{v:.0%}" for v in row] for row in grid_sb.tolist()],
+    primary = grids[metric]
+    cpv_labels = [_CPV_SHORT.get(c, c) for c in _RADAR_CPVS]
+
+    # ── KPI row ───────────────────────────────────────────────
+    avg_sb     = float(np.nanmean(grids["single_bid_risk"]))
+    high_risk  = int(np.sum(grids["single_bid_risk"] > 0.40))
+    low_comp   = int(np.sum(grids["competition"] < 3.0))
+    avg_comp   = float(np.nanmean(grids["competition"]))
+
+    def _kpi(val_str, label, color):
+        return html.Div([
+            html.Div(val_str, style={"fontSize":"26px","fontWeight":"700","color":color}),
+            html.Div(label,   style={"fontSize":"11px","color":COL_GREY}),
+        ], style={"flex":"1","textAlign":"center","backgroundColor":COL_CARD,"borderRadius":"8px",
+                  "padding":"12px","boxShadow":"0 2px 6px rgba(0,0,0,0.06)"})
+
+    kpis = [
+        _kpi(f"{avg_sb:.0%}",    "Avg single-bid risk", COL_RED),
+        _kpi(str(high_risk),      "Segments >40% risk",  COL_ORANGE),
+        _kpi(str(low_comp),       "Segments <3 bids",    COL_BLUE),
+        _kpi(f"{avg_comp:.1f}",   "Avg expected bids",   COL_GREEN),
+    ]
+
+    # ── Primary heatmap ───────────────────────────────────────
+    fmt = mconf["fmt"]
+    if "%" in fmt:
+        text_grid = [[f"{v:{fmt[1:]}}" if not np.isnan(v) else "N/A" for v in row]
+                     for row in primary.tolist()]
+    else:
+        text_grid = [[f"{v:{fmt[1:]}}" if not np.isnan(v) else "N/A" for v in row]
+                     for row in primary.tolist()]
+
+    fig_heat = go.Figure(go.Heatmap(
+        z=primary.tolist(),
+        x=cpv_labels,
+        y=_RADAR_CLUSTERS,
+        colorscale=mconf["cscale"],
+        zmin=mconf["zmin"], zmax=mconf["zmax"],
+        text=text_grid,
         texttemplate="%{text}",
         textfont={"size":10},
-        hovertemplate="Cluster: %{y}<br>CPV: %{x}<br>Single-bid risk: %{z:.1%}<extra></extra>",
+        hovertemplate=f"Cluster: %{{y}}<br>CPV: %{{x}}<br>{mconf['label']}: %{{z:{fmt[1:]}}}<extra></extra>",
     ))
-    fig_sb.update_layout(title="Single-Bid Risk by Cluster × CPV Sector",
-                         height=340, margin=dict(l=90,r=20,t=45,b=60),
-                         paper_bgcolor=COL_CARD, plot_bgcolor=COL_CARD,
-                         xaxis=dict(tickangle=-30))
+    fig_heat.update_layout(
+        title=f"{mconf['label']} by Cluster × CPV Sector  ({proc}, {ctype}, {'MEAT' if crit=='M' else 'L-price'})",
+        height=360, margin=dict(l=90,r=20,t=50,b=60),
+        paper_bgcolor=COL_CARD, plot_bgcolor=COL_CARD,
+        xaxis=dict(tickangle=-30),
+    )
 
-    # Competition heatmap
-    fig_comp = go.Figure(go.Heatmap(
-        z=grid_comp.tolist(),
-        x=[CPV_SHORT.get(c,c) for c in RADAR_CPVS],
-        y=RADAR_CLUSTERS,
-        colorscale=[[0,"#C00000"],[0.4,"#FF8C00"],[0.7,"#FFD700"],[1.0,"#217346"]],
-        zmin=1, zmax=8,
-        text=[[f"{v:.1f}" for v in row] for row in grid_comp.tolist()],
-        texttemplate="%{text}",
-        textfont={"size":10},
-        hovertemplate="Cluster: %{y}<br>CPV: %{x}<br>Expected bids: %{z:.1f}<extra></extra>",
+    # ── Scatter: competition vs single-bid risk ───────────────
+    sc_x, sc_y, sc_c, sc_t = [], [], [], []
+    for i, cluster in enumerate(_RADAR_CLUSTERS):
+        for j, cpv in enumerate(_RADAR_CPVS):
+            v_comp = grids["competition"][i, j]
+            v_sb   = grids["single_bid_risk"][i, j]
+            v_prim = primary[i, j]
+            if not (np.isnan(v_comp) or np.isnan(v_sb)):
+                sc_x.append(float(v_comp))
+                sc_y.append(float(v_sb))
+                sc_c.append(float(v_prim) if not np.isnan(v_prim) else 0)
+                sc_t.append(f"{cluster}<br>{_CPV_SHORT.get(cpv, cpv)}")
+
+    fig_sc = go.Figure(go.Scatter(
+        x=sc_x, y=sc_y, mode="markers",
+        marker=dict(size=11, color=sc_c, colorscale=mconf["cscale"],
+                    cmin=mconf["zmin"], cmax=mconf["zmax"],
+                    showscale=True, colorbar=dict(title=mconf["label"],thickness=12,len=0.8),
+                    line=dict(width=0.5, color="white")),
+        text=sc_t,
+        hovertemplate="<b>%{text}</b><br>Competition: %{x:.1f} bids<br>Single-bid risk: %{y:.1%}<extra></extra>",
     ))
-    fig_comp.update_layout(title="Expected Competition (Bids) by Cluster × CPV Sector",
-                           height=340, margin=dict(l=90,r=20,t=45,b=60),
-                           paper_bgcolor=COL_CARD, plot_bgcolor=COL_CARD,
-                           xaxis=dict(tickangle=-30))
+    # Quadrant lines
+    fig_sc.add_hline(y=0.30, line_dash="dot", line_color=COL_ORANGE, line_width=1)
+    fig_sc.add_vline(x=3.0,  line_dash="dot", line_color=COL_ORANGE, line_width=1)
+    fig_sc.update_layout(
+        title="All Segments: Competition vs Single-Bid Risk",
+        xaxis=dict(title="Expected bids", range=[0, max(sc_x or [10]) + 1]),
+        yaxis=dict(title="Single-bid risk", tickformat=".0%", range=[0, max(sc_y or [0.7]) + 0.05]),
+        height=310, margin=dict(l=50,r=10,t=45,b=40),
+        paper_bgcolor=COL_CARD, plot_bgcolor=COL_BG,
+    )
 
-    # Top-10 highest risk segments bar chart
-    segments = []
-    for i, cluster in enumerate(RADAR_CLUSTERS):
-        for j, cpv in enumerate(RADAR_CPVS):
-            segments.append({"label":f"{cluster} / {CPV_SHORT.get(cpv,cpv)}", "sb":grid_sb[i,j], "comp":grid_comp[i,j]})
-    segments.sort(key=lambda x: -x["sb"])
-    top10 = segments[:10]
+    # ── Top-10 bar chart (ranked by primary metric) ───────────
+    segs = []
+    for i, cluster in enumerate(_RADAR_CLUSTERS):
+        for j, cpv in enumerate(_RADAR_CPVS):
+            v = primary[i, j]
+            if not np.isnan(v):
+                segs.append({"label": f"{cluster} / {_CPV_SHORT.get(cpv,cpv)}", "val": float(v)})
+    better = mconf["better"]
+    segs.sort(key=lambda s: s["val"] if better == "lower" else -s["val"])
+    top10 = segs[:10]
+    bar_colors = []
+    for s in top10:
+        if better == "lower":
+            bar_colors.append(COL_RED if s["val"] > mconf["zmax"] * 0.7 else
+                              COL_ORANGE if s["val"] > mconf["zmax"] * 0.45 else COL_GREY)
+        else:
+            bar_colors.append(COL_RED if s["val"] < mconf["zmin"] + (mconf["zmax"] - mconf["zmin"]) * 0.25 else
+                              COL_ORANGE if s["val"] < mconf["zmin"] + (mconf["zmax"] - mconf["zmin"]) * 0.45 else COL_GREEN)
+
+    title_dir = "Worst" if better == "lower" else "Best"
     fig_bar = go.Figure(go.Bar(
         x=[s["label"] for s in top10],
-        y=[s["sb"] for s in top10],
-        marker_color=[COL_RED if s["sb"]>0.4 else COL_ORANGE if s["sb"]>0.3 else COL_GREY for s in top10],
-        text=[f"{s['sb']:.0%}" for s in top10],
+        y=[s["val"] for s in top10],
+        marker_color=bar_colors,
+        text=[f"{s['val']:{fmt[1:]}}" for s in top10],
         textposition="outside",
-        hovertemplate="%{x}<br>Single-bid risk: %{y:.1%}<extra></extra>",
+        hovertemplate=f"%{{x}}<br>{mconf['label']}: %{{y:{fmt[1:]}}}<extra></extra>",
     ))
-    fig_bar.update_layout(title="Top 10 Highest Single-Bid Risk Segments",
-                          yaxis=dict(title="Single-bid risk", tickformat=".0%", range=[0,0.7]),
-                          height=300, margin=dict(l=40,r=20,t=45,b=80),
-                          paper_bgcolor=COL_CARD, plot_bgcolor=COL_BG,
-                          xaxis=dict(tickangle=-30))
+    y_max = max((s["val"] for s in top10), default=1) * 1.25
+    fig_bar.update_layout(
+        title=f"Top 10 {title_dir} Segments — {mconf['label']}",
+        yaxis=dict(title=mconf["label"], range=[0, y_max]),
+        height=310, margin=dict(l=40,r=20,t=45,b=80),
+        paper_bgcolor=COL_CARD, plot_bgcolor=COL_BG,
+        xaxis=dict(tickangle=-35),
+    )
 
-    # KPI summary row
-    avg_sb   = float(np.nanmean(grid_sb))
-    high_risk = int(np.sum(grid_sb > 0.4))
-    low_comp  = int(np.sum(grid_comp < 3.0))
-    kpi_row = html.Div([
-        html.Div([html.Div(f"{avg_sb:.0%}", style={"fontSize":"28px","fontWeight":"700","color":COL_RED}), html.Div("Avg single-bid risk", style={"fontSize":"11px","color":COL_GREY})], style={"flex":"1","textAlign":"center","backgroundColor":COL_CARD,"borderRadius":"8px","padding":"14px","boxShadow":"0 2px 6px rgba(0,0,0,0.06)"}),
-        html.Div([html.Div(str(high_risk), style={"fontSize":"28px","fontWeight":"700","color":COL_ORANGE}), html.Div("Segments >40% risk", style={"fontSize":"11px","color":COL_GREY})], style={"flex":"1","textAlign":"center","backgroundColor":COL_CARD,"borderRadius":"8px","padding":"14px","boxShadow":"0 2px 6px rgba(0,0,0,0.06)"}),
-        html.Div([html.Div(str(low_comp), style={"fontSize":"28px","fontWeight":"700","color":COL_BLUE}), html.Div("Segments <3 bids", style={"fontSize":"11px","color":COL_GREY})], style={"flex":"1","textAlign":"center","backgroundColor":COL_CARD,"borderRadius":"8px","padding":"14px","boxShadow":"0 2px 6px rgba(0,0,0,0.06)"}),
-        html.Div([html.Div(f"{float(np.nanmean(grid_comp)):.1f}", style={"fontSize":"28px","fontWeight":"700","color":COL_GREEN}), html.Div("Avg expected bids", style={"fontSize":"11px","color":COL_GREY})], style={"flex":"1","textAlign":"center","backgroundColor":COL_CARD,"borderRadius":"8px","padding":"14px","boxShadow":"0 2px 6px rgba(0,0,0,0.06)"}),
-    ], style={"display":"flex","gap":"12px","marginBottom":"16px"})
+    n_valid = int(np.sum(~np.isnan(primary)))
+    status  = (f"Grid: {n_valid}/100 segments · "
+               f"{proc}, {ctype}, {'MEAT' if crit=='M' else 'L-price'}, "
+               f"€{val_f:,.0f}, {prep}d prep")
+    return kpis, fig_heat, fig_sc, fig_bar, status
 
-    return html.Div([
-        html.H2("📊 Risk Radar — Procurement Risk by Segment",
-                style={"color":COL_NAVY,"fontSize":"18px","margin":"0 0 4px 0","fontWeight":"700"}),
-        html.P("Simulated single-bid risk and expected competition across all country clusters and CPV sectors. Based on open procedures, MEAT criteria, €500k value, 35-day preparation.",
-               style={"color":COL_GREY,"fontSize":"12px","margin":"0 0 16px 0"}),
-        kpi_row,
-        html.Div([dcc.Graph(figure=fig_sb, config={"displayModeBar":False})],
-                 style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","marginBottom":"16px"}),
-        html.Div([dcc.Graph(figure=fig_comp, config={"displayModeBar":False})],
-                 style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)","marginBottom":"16px"}),
-        html.Div([dcc.Graph(figure=fig_bar, config={"displayModeBar":False})],
-                 style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"16px","boxShadow":"0 2px 8px rgba(0,0,0,0.07)"}),
-    ], style={"padding":"20px"})
+
+@app.callback(
+    Output("radar-drilldown", "children"),
+    Output("radar-drilldown", "style"),
+    Input("radar-heatmap", "clickData"),
+    State("radar-proc",  "value"), State("radar-ctype","value"),
+    State("radar-crit",  "value"), State("radar-pw",   "value"),
+    State("radar-prep",  "value"), State("radar-dur",  "value"),
+    State("radar-val",   "value"), State("radar-flags","value"),
+    prevent_initial_call=True,
+)
+def radar_drilldown(click, proc, ctype, crit, pw, prep, dur, val, flags):
+    if not click:
+        raise dash.exceptions.PreventUpdate
+
+    pt      = click["points"][0]
+    cpv_lbl = pt.get("x","")
+    cluster = pt.get("y","")
+
+    # Reverse-lookup CPV code from short label
+    cpv = next((k for k, v in _CPV_SHORT.items() if v == cpv_lbl), "72")
+    country = _CLUSTER_COUNTRY.get(cluster, "DE")
+    flags   = flags or []
+
+    params = {
+        "country":           country,
+        "procedure_type":    proc or "OPE",
+        "contract_type":     ctype or "S",
+        "cpv_division":      cpv,
+        "criteria":          crit or "M",
+        "price_weight_pct":  float(pw or 50),
+        "value_euro":        float(val or 500_000),
+        "prep_time_days":    float(prep or 35),
+        "duration_months":   float(dur or 24),
+        "gpa":               "gpa"     in flags,
+        "eu_funds":          "eu_funds" in flags,
+        "fra_agreement":     "fra"     in flags,
+        "electronic_auction":"ea"      in flags,
+        "accelerated":       False,
+    }
+
+    try:
+        sim = twin.simulate(params, n_samples=3000, seed=42)
+    except Exception as e:
+        return html.Div(f"Simulation error: {e}", style={"color":COL_RED}), {"display":"block"}
+
+    sb   = sim["single_bid_risk"]["probability"]
+    comp = sim["competition"]["mean"]
+    pr   = sim["price_ratio"]["mean"]
+    dur_v= sim["duration"]["mean"]
+    cb   = sim["cross_border"]["probability"]
+
+    def _kpi(val_str, label, color):
+        return html.Div([
+            html.Div(val_str, style={"fontSize":"22px","fontWeight":"700","color":color}),
+            html.Div(label,   style={"fontSize":"11px","color":COL_GREY}),
+        ], style={"flex":"1","textAlign":"center","backgroundColor":COL_BG,
+                  "borderRadius":"8px","padding":"12px"})
+
+    sb_color  = COL_RED if sb > 0.35 else COL_ORANGE if sb > 0.25 else COL_GREEN
+    comp_color= COL_RED if comp < 2.5 else COL_ORANGE if comp < 4 else COL_GREEN
+
+    # Distribution histogram for primary outcome (single-bid risk)
+    comp_samples = sim["competition"]["samples"]
+    fig_dist = go.Figure()
+    fig_dist.add_trace(go.Histogram(
+        x=comp_samples, nbinsx=30,
+        marker_color=COL_BLUE, opacity=0.75,
+        name="Competition distribution",
+    ))
+    fig_dist.update_layout(
+        title="Competition distribution (bids)",
+        height=180, margin=dict(l=30,r=10,t=35,b=30),
+        paper_bgcolor=COL_BG, plot_bgcolor=COL_BG,
+        showlegend=False,
+        xaxis=dict(title="Bids"),
+        yaxis=dict(title="Count"),
+    )
+
+    panel = html.Div([
+        html.Div([
+            html.Span(f"📍 Drill-down: {cluster} / {_CPV_SHORT.get(cpv, cpv)}  ({country})",
+                      style={"fontWeight":"700","color":COL_NAVY,"fontSize":"14px"}),
+            html.Span(" ✕", id="radar-drilldown-close",
+                      style={"float":"right","cursor":"pointer","color":COL_GREY,
+                             "fontSize":"18px","lineHeight":"1","marginTop":"-2px"}),
+        ], style={"marginBottom":"12px"}),
+        html.Div([
+            _kpi(f"{comp:.1f}", "Expected bids", comp_color),
+            _kpi(f"{sb:.0%}",   "Single-bid risk", sb_color),
+            _kpi(f"{cb:.1%}",   "Cross-border win", COL_TEAL),
+            _kpi(f"{pr:.3f}",   "Price ratio", COL_ORANGE),
+            _kpi(f"{dur_v:.0f}d", "Duration", COL_GREY),
+        ], style={"display":"flex","gap":"8px","marginBottom":"12px"}),
+        html.Div([
+            html.Div([
+                html.Div("Competition P10–P90",
+                         style={"fontSize":"11px","color":COL_GREY,"marginBottom":"4px"}),
+                html.Div(f"{sim['competition']['p10']:.1f} – {sim['competition']['p90']:.1f} bids",
+                         style={"fontWeight":"600","color":COL_NAVY}),
+            ], style={"flex":"1"}),
+            html.Div([
+                html.Div("Price ratio P10–P90",
+                         style={"fontSize":"11px","color":COL_GREY,"marginBottom":"4px"}),
+                html.Div(f"{sim['price_ratio']['p10']:.2f} – {sim['price_ratio']['p90']:.2f}",
+                         style={"fontWeight":"600","color":COL_NAVY}),
+            ], style={"flex":"1"}),
+            html.Div([
+                html.Div("Duration P10–P90",
+                         style={"fontSize":"11px","color":COL_GREY,"marginBottom":"4px"}),
+                html.Div(f"{sim['duration']['p10']:.0f} – {sim['duration']['p90']:.0f} days",
+                         style={"fontWeight":"600","color":COL_NAVY}),
+            ], style={"flex":"1"}),
+        ], style={"display":"flex","gap":"16px","backgroundColor":COL_BG,
+                  "borderRadius":"8px","padding":"12px","marginBottom":"12px"}),
+        dcc.Graph(figure=fig_dist, config={"displayModeBar":False}),
+    ], style={"backgroundColor":COL_CARD,"borderRadius":"10px","padding":"18px",
+              "boxShadow":"0 2px 8px rgba(0,0,0,0.07)",
+              "border":f"2px solid {COL_BLUE}"})
+
+    return panel, {"display":"block","marginBottom":"14px"}
 
 
 # ══════════════════════════════════════════════════════════════════
