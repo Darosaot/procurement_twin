@@ -30,10 +30,5 @@ httpx==0.27.2
 slowapi==0.1.9                  # Rate limiting for FastAPI/Starlette
 prometheus-client==0.21.0      # Prometheus metrics exposition
 
-# ── V2: AI Advisor (Claude API, optional) ─────────────────────────
-# Set ANTHROPIC_API_KEY env var to activate LLM narrative in /advise.
-# Rule-based advisor works without this package installed.
-anthropic==0.40.0
-
 # ── Local / dev only (not needed in the Space) ────────────────────
 # notebook, matplotlib, seaborn  →  exploratory notebooks only
