@@ -11,10 +11,19 @@ FUTURE_CAN_ID format in CFC: 2021265222 → year=2021, notice=265222
   → This is YYYYNNNNNN format (year prefix + 6-digit notice number)
 """
 
+import logging
 import os
-import polars as pl
 import re
 import time
+
+import polars as pl
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Procurement data")
 OUT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "processed")
@@ -98,15 +107,6 @@ t0 = time.time()
 
 cfc_ids = pl.read_csv(
     CFC_FILE,
-
-import logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger(__name__)
-
     columns=["ID_NOTICE_CN", "FUTURE_CAN_ID", "FUTURE_CAN_ID_ESTIMATED", "YEAR"],
     infer_schema_length=5000,
     ignore_errors=True
