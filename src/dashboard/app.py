@@ -25,7 +25,6 @@ for _p in [_PROJECT_ROOT, _SRC_DIR]:
 FEAT_DIR          = os.environ.get("FEAT_DIR",  os.path.join(_PROJECT_ROOT, "data", "features"))
 MODEL_DIR         = os.environ.get("MODEL_DIR", os.path.join(_PROJECT_ROOT, "models"))
 _PIPELINE_STATUS  = os.path.join(_PROJECT_ROOT, "pipeline_status.json")
-_PIPELINE_SCRIPT  = os.path.join(_PROJECT_ROOT, "pipeline", "run_pipeline.py")
 
 import dash
 from dash import dcc, html, Input, Output, State, ctx
@@ -49,13 +48,35 @@ except Exception as _adv_err:
     _ADVISOR_AVAILABLE = False
     logger.warning("Advisor module unavailable: %s", _adv_err)
 
-try:
-    from pipeline.run_pipeline import run_pipeline_async as _run_pipeline_async
-    _PIPELINE_AVAILABLE = True
-except Exception as _pipe_err:
-    _run_pipeline_async = None
-    _PIPELINE_AVAILABLE = False
-    logger.warning("Pipeline module unavailable: %s", _pipe_err)
+import subprocess as _subprocess
+import threading as _threading
+
+_PIPELINE_SCRIPT = os.path.join(_PROJECT_ROOT, "pipeline", "run_pipeline.py")
+_PIPELINE_AVAILABLE = os.path.isfile(_PIPELINE_SCRIPT)
+if not _PIPELINE_AVAILABLE:
+    logger.warning("Pipeline script not found at %s", _PIPELINE_SCRIPT)
+
+
+def _run_pipeline_async(step_ids=None, download_years=None,
+                        skip_download=False, skip_upload=False):
+    """Start run_pipeline.py as a background subprocess — no import needed."""
+    cmd = [sys.executable, _PIPELINE_SCRIPT]
+    if step_ids:
+        cmd += ["--steps"] + list(step_ids)
+    if download_years:
+        cmd += ["--years"] + [str(y) for y in download_years]
+    if skip_download:
+        cmd.append("--skip-download")
+    if skip_upload:
+        cmd.append("--skip-upload")
+
+    def _run():
+        _subprocess.run(cmd, cwd=_PROJECT_ROOT)
+
+    t = _threading.Thread(target=_run, daemon=True)
+    t.start()
+    return t
+
 
 # ── Initialise twin ───────────────────────────────────────────────
 twin = ProcurementTwin()
