@@ -3458,75 +3458,12 @@ def pipe_toggle_year_range(mode):
     return {"display":"block","marginTop":"8px"} if mode == "custom" else {"display":"none"}
 
 
-@app.callback(
-    Output("pipe-running-store","data"),
-    Output("pipe-btn-status","children"),
-    Input("pipe-start-btn","n_clicks"),
-    State("pipe-years-mode","value"),
-    State("pipe-year-range","value"),
-    State("pipe-steps","value"),
-    State("pipe-running-store","data"),
-    prevent_initial_call=True,
-)
-def pipe_start(n_clicks, years_mode, year_range, steps, already_running):
-    try:
-        if not _PIPELINE_AVAILABLE:
-            return False, "❌ Pipeline module not available — check server logs."
-
-        if already_running:
-            return True, "⟳ Pipeline already running…"
-
-        try:
-            with open(_PIPELINE_STATUS) as f:
-                if json.load(f).get("status") == "running":
-                    return True, "⟳ Already running — check logs below."
-        except Exception:
-            pass
-
-        kwargs = {"step_ids": steps or None}
-        if years_mode == "custom" and year_range:
-            kwargs["download_years"] = list(range(int(year_range[0]), int(year_range[1]) + 1))
-
-        _run_pipeline_async(**kwargs)
-        return True, "⟳ Pipeline started…"
-
-    except Exception as exc:
-        return False, f"❌ Error: {exc}"
+_STEP_IDS    = ["download","linkage","features","train","upload"]
+_STEP_LABELS = ["Download TED data","CFC–CAN linkage","Feature engineering",
+                "Train models","Upload to HF Hub"]
 
 
-@app.callback(
-    Output("pipe-poll","disabled"),
-    Input("pipe-running-store","data"),
-)
-def pipe_toggle_poll(running):
-    return not running
-
-
-@app.callback(
-    Output("pipe-log","children"),
-    Output("pipe-step-indicators","children"),
-    Output("pipe-running-store","data", allow_duplicate=True),
-    Output("pipe-btn-status","children", allow_duplicate=True),
-    Input("pipe-poll","n_intervals"),
-    prevent_initial_call=True,
-)
-def pipe_poll_status(n_intervals):
-    _step_ids    = ["download","linkage","features","train","upload"]
-    _step_labels = ["Download TED data","CFC–CAN linkage","Feature engineering",
-                    "Train models","Upload to HF Hub"]
-
-    try:
-        with open(_PIPELINE_STATUS) as f:
-            st = json.load(f)
-    except Exception:
-        return "No pipeline run yet.", [], False, ""
-
-    status    = st.get("status", "idle")
-    cur_step  = st.get("step")
-    step_idx  = st.get("step_idx", 0)
-    logs      = st.get("logs", [])
-    error_msg = st.get("error")
-
+def _make_pills(status, cur_step, step_idx):
     def _pill(label, state):
         colors = {"done":COL_GREEN,"active":COL_ORANGE,"pending":COL_GREY,"error":COL_RED}
         icons  = {"done":"✓ ","active":"⟳ ","pending":"○ ","error":"✗ "}
@@ -3535,34 +3472,120 @@ def pipe_poll_status(n_intervals):
             style={"backgroundColor":bg[state],"color":colors[state],"borderRadius":"12px",
                    "padding":"3px 10px","fontSize":"11px","fontWeight":"600",
                    "marginRight":"6px","display":"inline-block","marginBottom":"4px"})
-
     pills = []
-    for i, (sid, slabel) in enumerate(zip(_step_ids, _step_labels)):
+    for i, (sid, slabel) in enumerate(zip(_STEP_IDS, _STEP_LABELS)):
         if status == "done":
-            pill_state = "done"
+            s = "done"
         elif status == "error" and cur_step == sid:
-            pill_state = "error"
+            s = "error"
         elif i < step_idx - 1:
-            pill_state = "done"
+            s = "done"
         elif i == step_idx - 1 and status == "running":
-            pill_state = "active"
+            s = "active"
         else:
-            pill_state = "pending"
-        pills.append(_pill(slabel, pill_state))
+            s = "pending"
+        pills.append(_pill(slabel, s))
+    return pills
 
-    log_text = "\n".join(logs[-200:]) if logs else "Waiting for output…"
-    still_running = status == "running"
+
+@app.callback(
+    Output("pipe-log",            "children"),
+    Output("pipe-step-indicators","children"),
+    Output("pipe-btn-status",     "children"),
+    Output("pipe-running-store",  "data"),
+    Output("pipe-poll",           "disabled"),
+    Input("pipe-start-btn",       "n_clicks"),
+    Input("pipe-poll",            "n_intervals"),
+    State("pipe-years-mode",      "value"),
+    State("pipe-year-range",      "value"),
+    State("pipe-steps",           "value"),
+    State("pipe-running-store",   "data"),
+    prevent_initial_call=True,
+)
+def pipe_controller(n_clicks, n_intervals, years_mode, year_range, steps, running):
+    trigger = ctx.triggered_id
+
+    # ── Start button clicked ─────────────────────────────────────
+    if trigger == "pipe-start-btn":
+        if not _PIPELINE_AVAILABLE:
+            return (
+                "❌ Pipeline module not importable — check Space logs for the traceback.",
+                [], "❌ Module unavailable", False, True,
+            )
+        if running:
+            return (
+                _read_log(), _read_pills(), "⟳ Already running…", True, False,
+            )
+        try:
+            with open(_PIPELINE_STATUS) as f:
+                if json.load(f).get("status") == "running":
+                    return _read_log(), _read_pills(), "⟳ Already running…", True, False
+        except Exception:
+            pass
+
+        kwargs = {"step_ids": steps or None}
+        if years_mode == "custom" and year_range:
+            kwargs["download_years"] = list(range(int(year_range[0]), int(year_range[1]) + 1))
+
+        try:
+            _run_pipeline_async(**kwargs)
+        except Exception as exc:
+            return (f"❌ Failed to start: {exc}", [], f"❌ {exc}", False, True)
+
+        initial_log = (
+            "▶ Pipeline started!\n"
+            "   Downloading TED data from EU Open Data Portal…\n"
+            "   (This first step may take 10–30 min depending on connection speed)\n"
+            "   Log will refresh every 3 seconds."
+        )
+        initial_pills = _make_pills("running", "download", 1)
+        return initial_log, initial_pills, "⟳ Starting — Download TED data…", True, False
+
+    # ── Interval poll ────────────────────────────────────────────
+    try:
+        with open(_PIPELINE_STATUS) as f:
+            st = json.load(f)
+    except FileNotFoundError:
+        return "No pipeline run yet — click ▶ Start Pipeline.", [], "", False, True
+    except Exception as exc:
+        return f"Error reading status: {exc}", [], "", False, True
+
+    status    = st.get("status", "idle")
+    cur_step  = st.get("step", "")
+    step_idx  = st.get("step_idx", 0)
+    logs      = st.get("logs", [])
+    error_msg = st.get("error", "")
+
+    log_text = "\n".join(logs[-200:]) if logs else "Waiting for first output…"
+    pills    = _make_pills(status, cur_step, step_idx)
+    still_running = (status == "running")
 
     if status == "done":
-        btn_status = f"✅ Complete — {st.get('finished_at','')}"
+        btn = f"✅ Complete — {st.get('finished_at','')}"
     elif status == "error":
-        btn_status = f"❌ {error_msg or 'Pipeline failed — check logs'}"
+        btn = f"❌ {error_msg or 'Pipeline failed — see log'}"
     elif status == "running":
-        btn_status = f"⟳ {st.get('step_label','')}  (step {step_idx}/{st.get('total_steps',5)})"
+        btn = f"⟳ {st.get('step_label','')}  (step {step_idx}/{st.get('total_steps',5)})"
     else:
-        btn_status = ""
+        btn = ""
 
-    return log_text, pills, still_running, btn_status
+    return log_text, pills, btn, still_running, not still_running
+
+
+def _read_log():
+    try:
+        with open(_PIPELINE_STATUS) as f:
+            return "\n".join(json.load(f).get("logs", [])[-200:])
+    except Exception:
+        return ""
+
+def _read_pills():
+    try:
+        with open(_PIPELINE_STATUS) as f:
+            st = json.load(f)
+        return _make_pills(st.get("status","idle"), st.get("step",""), st.get("step_idx",0))
+    except Exception:
+        return []
 
 
 # ══════════════════════════════════════════════════════════════════
