@@ -71,7 +71,7 @@ def _run_pipeline_async(step_ids=None, download_years=None,
         cmd.append("--skip-upload")
 
     def _run():
-        _subprocess.run(cmd, cwd=_PROJECT_ROOT)
+        _subprocess.run(cmd, cwd=_PROJECT_ROOT, env=os.environ.copy())
 
     t = _threading.Thread(target=_run, daemon=True)
     t.start()

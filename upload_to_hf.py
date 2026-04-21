@@ -63,9 +63,13 @@ def main():
         print("    Run:  pip install huggingface_hub")
         sys.exit(1)
 
-    # Read token from env var or cached HF login (~/.cache/huggingface/token)
-    TOKEN = os.environ.get("HF_TOKEN")
-    api = HfApi(token=TOKEN)
+    # Read token from env var (try several common names) or cached HF login
+    TOKEN = (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGINGFACE_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    )
+    api = HfApi(token=TOKEN or True)  # True = fall back to cached ~/.cache/huggingface/token
 
     # Verify token works
     try:
@@ -73,7 +77,10 @@ def main():
         print(f"✅  Logged in as: {user['name']}")
     except Exception as e:
         print(f"❌  Authentication failed: {e}")
-        print("    Set HF_TOKEN env var or run:  hf auth login")
+        print("    HF_TOKEN is not set or is invalid.")
+        print("    To fix: go to your HuggingFace Space → Settings → Variables and secrets")
+        print("    → Add a secret named HF_TOKEN with your HF write token.")
+        print("    Get a write token at: https://huggingface.co/settings/tokens")
         sys.exit(1)
 
     # Create the dataset repo if it doesn't exist
