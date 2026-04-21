@@ -27,7 +27,8 @@ MODEL_DIR         = os.environ.get("MODEL_DIR", os.path.join(_PROJECT_ROOT, "mod
 _PIPELINE_STATUS  = os.path.join(_PROJECT_ROOT, "pipeline_status.json")
 
 import dash
-from dash import dcc, html, Input, Output, State, ctx
+from dash import dcc, html, Input, Output, State, ctx, ALL
+from dash.exceptions import PreventUpdate
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
@@ -160,18 +161,18 @@ CLUSTER_OPTIONS = [
               "CEE","Baltic","Balkan","Mediterranean","Anglophone"]
 ]
 
-# ── Colour palette ────────────────────────────────────────────────
-COL_NAVY   = "#1F3864"
-COL_BLUE   = "#2E75B6"
-COL_LIGHT  = "#D5E8F0"
-COL_TEAL   = "#00A7A7"
-COL_GREEN  = "#217346"
-COL_RED    = "#C00000"
-COL_ORANGE = "#E67E22"
-COL_GREY   = "#8C9099"
-COL_ACCENT = "#4472C4"
-COL_BG     = "#F0F4F8"
-COL_CARD   = "#FFFFFF"
+# ── Colour palette (updated design system) ────────────────────────
+COL_NAVY   = "#0F172A"   # dark navy — headings, text
+COL_BLUE   = "#2563EB"   # primary blue — simulate actions
+COL_LIGHT  = "#E2E8F0"   # borders, dividers
+COL_TEAL   = "#0891B2"   # policy/secondary actions
+COL_GREEN  = "#059669"   # positive / success
+COL_RED    = "#DC2626"   # risk / danger
+COL_ORANGE = "#D97706"   # warning / elevated
+COL_GREY   = "#64748B"   # secondary text
+COL_ACCENT = "#7C3AED"   # scenario B, comparison highlights
+COL_BG     = "#F1F5F9"   # page background
+COL_CARD   = "#FFFFFF"   # card background
 
 # ── Per-outcome tooltip texts (shown on ℹ️ hover in Designer & Comparator) ──
 OUTCOME_TOOLTIPS = {
@@ -208,77 +209,93 @@ OUTCOME_TOOLTIPS = {
 # ══════════════════════════════════════════════════════════════════
 def build_form(prefix, defaults=None):
     d = defaults or {}
+
+    def _fsection(title, children):
+        return html.Div([
+            html.Div(title, className="form-section-title"),
+            *children,
+        ], className="form-section")
+
     return html.Div([
-        _form_row("Country", dcc.Dropdown(
-            id=f"{prefix}-country",
-            options=[{"label": c, "value": c} for c in COUNTRIES],
-            value=d.get("country","DE"), clearable=False)),
+        _fsection("Contract Details", [
+            _form_row("Country", dcc.Dropdown(
+                id=f"{prefix}-country",
+                options=[{"label": c, "value": c} for c in COUNTRIES],
+                value=d.get("country", "DE"), clearable=False)),
 
-        _form_row("Procedure type", html.Div([
-            dcc.Dropdown(id=f"{prefix}-proc", options=PROC_OPTIONS,
-                         value=d.get("proc","OPE"), clearable=False),
-            html.Div(id=f"{prefix}-proc-desc",
-                     style={"fontSize":"11px","color":COL_GREY,"marginTop":"4px",
-                            "fontStyle":"italic"}),
-        ])),
+            _form_row("Procedure type", html.Div([
+                dcc.Dropdown(id=f"{prefix}-proc", options=PROC_OPTIONS,
+                             value=d.get("proc", "OPE"), clearable=False),
+                html.Div(id=f"{prefix}-proc-desc",
+                         style={"fontSize": "11px", "color": COL_GREY, "marginTop": "4px",
+                                "fontStyle": "italic", "lineHeight": "1.4"}),
+            ])),
 
-        _form_row("Contract type", dcc.RadioItems(
-            id=f"{prefix}-ctype", options=CONTRACT_OPTIONS,
-            value=d.get("ctype","S"), inline=True, className="radio-inline")),
+            _form_row("Contract type", dcc.RadioItems(
+                id=f"{prefix}-ctype", options=CONTRACT_OPTIONS,
+                value=d.get("ctype", "S"), inline=True, className="radio-inline")),
 
-        _form_row("CPV sector", dcc.Dropdown(
-            id=f"{prefix}-cpv", options=CPV_OPTIONS,
-            value=d.get("cpv","72"), clearable=False)),
+            _form_row("CPV sector", dcc.Dropdown(
+                id=f"{prefix}-cpv", options=CPV_OPTIONS,
+                value=d.get("cpv", "72"), clearable=False)),
+        ]),
 
-        _form_row("Award criteria", dcc.RadioItems(
-            id=f"{prefix}-crit", options=CRITERIA_OPTIONS,
-            value=d.get("crit","M"), className="radio-block")),
+        _fsection("Evaluation Criteria", [
+            _form_row("Award criteria", dcc.RadioItems(
+                id=f"{prefix}-crit", options=CRITERIA_OPTIONS,
+                value=d.get("crit", "M"), className="radio-block")),
 
-        _form_row("Price weight (%)", html.Div([
-            html.Div(id=f"{prefix}-pw-val",
-                     style={"fontSize":"11px","color":COL_GREY,"textAlign":"right",
-                            "marginBottom":"2px"}),
-            dcc.Slider(id=f"{prefix}-pw", min=0, max=100, step=5,
-                       value=d.get("pw",60),
-                       marks={0:"0%",25:"25%",50:"50%",75:"75%",100:"100%"},
-                       tooltip={"placement":"bottom","always_visible":False}),
-        ]), id_suffix="-pw-row"),
+            _form_row("Price weight (%)", html.Div([
+                html.Div(id=f"{prefix}-pw-val",
+                         style={"fontSize": "11px", "color": COL_GREY,
+                                "textAlign": "right", "marginBottom": "2px"}),
+                dcc.Slider(id=f"{prefix}-pw", min=0, max=100, step=5,
+                           value=d.get("pw", 60),
+                           marks={0: "0%", 25: "25%", 50: "50%", 75: "75%", 100: "100%"},
+                           tooltip={"placement": "bottom", "always_visible": False}),
+            ]), id_suffix="-pw-row"),
+        ]),
 
-        _form_row("Estimated value (€)", dcc.Input(
-            id=f"{prefix}-val", type="number", value=d.get("val",1_000_000),
-            min=10_000, step=10_000, style={"width":"100%","padding":"6px",
-            "border":"1px solid #CCC","borderRadius":"4px","fontSize":"13px"})),
+        _fsection("Financial & Timeline", [
+            _form_row("Estimated value (€)", dcc.Input(
+                id=f"{prefix}-val", type="number", value=d.get("val", 1_000_000),
+                min=10_000, step=10_000,
+                style={"width": "100%", "padding": "7px 10px",
+                       "border": f"1px solid {COL_LIGHT}", "borderRadius": "7px",
+                       "fontSize": "13px", "fontFamily": "inherit"})),
 
-        _form_row("Preparation time (days)", dcc.Slider(
-            id=f"{prefix}-prep", min=15, max=90, step=1,
-            value=d.get("prep",35),
-            marks={15:"15",35:"35",52:"52",90:"90"},
-            tooltip={"placement":"bottom","always_visible":True})),
+            _form_row("Preparation time (days)", dcc.Slider(
+                id=f"{prefix}-prep", min=15, max=90, step=1,
+                value=d.get("prep", 35),
+                marks={15: "15", 35: "35", 52: "52", 90: "90"},
+                tooltip={"placement": "bottom", "always_visible": True})),
 
-        _form_row("Contract duration (months)", dcc.Slider(
-            id=f"{prefix}-dur", min=3, max=60, step=3,
-            value=d.get("dur",24),
-            marks={3:"3m",12:"1yr",24:"2yr",36:"3yr",60:"5yr"},
-            tooltip={"placement":"bottom","always_visible":True})),
+            _form_row("Contract duration (months)", dcc.Slider(
+                id=f"{prefix}-dur", min=3, max=60, step=3,
+                value=d.get("dur", 24),
+                marks={3: "3m", 12: "1yr", 24: "2yr", 36: "3yr", 60: "5yr"},
+                tooltip={"placement": "bottom", "always_visible": True})),
+        ]),
 
-        _form_row("Options", dcc.Checklist(
-            id=f"{prefix}-flags",
-            options=[
-                {"label": " GPA covered",         "value": "gpa"},
-                {"label": " EU funds",            "value": "eu_funds"},
-                {"label": " Electronic auction",  "value": "ea"},
-                {"label": " Framework agreement", "value": "fra"},
-                {"label": " Accelerated",         "value": "acc"},
-            ],
-            value=d.get("flags",["gpa"]), className="checklist")),
+        _fsection("Compliance & Options", [
+            _form_row("Flags", dcc.Checklist(
+                id=f"{prefix}-flags",
+                options=[
+                    {"label": " GPA covered",         "value": "gpa"},
+                    {"label": " EU funds",            "value": "eu_funds"},
+                    {"label": " Electronic auction",  "value": "ea"},
+                    {"label": " Framework agreement", "value": "fra"},
+                    {"label": " Accelerated",         "value": "acc"},
+                ],
+                value=d.get("flags", ["gpa"]), className="checklist")),
+        ]),
 
-        html.Button("▶  Simulate", id=f"{prefix}-btn",
+        html.Button("▶  Run Simulation", id=f"{prefix}-btn",
                     n_clicks=0, className="btn-primary"),
 
-        # Immediate status message — updated via clientside callback on click
         html.Div(id=f"{prefix}-status", style={
-            "fontSize":"12px","color":COL_BLUE,"marginTop":"10px",
-            "minHeight":"18px","fontStyle":"italic",
+            "fontSize": "12px", "color": COL_BLUE, "marginTop": "8px",
+            "minHeight": "16px", "fontStyle": "italic",
         }),
     ], className="form-panel")
 
@@ -334,125 +351,329 @@ def dist_chart(samples, label, color, vline=None, height=200):
     return fig
 
 
-def kpi_card(label, value_str, badge=None, badge_col=None, note=None, tooltip_text=None):
-    """Polished KPI card with optional badge, benchmark note, and hover tooltip."""
-    # Label row: text + optional ℹ️ tooltip icon
-    label_content = html.Div(
-        [
-            html.Span(label,
-                      style={"fontSize":"11px","color":COL_GREY,
-                             "textTransform":"uppercase","letterSpacing":"0.5px"}),
-            *([html.Span(
-                "ⓘ",
-                className="kpi-info-icon",
-                **{"data-kpi-tooltip": tooltip_text},
-                style={"marginLeft":"4px","cursor":"help",
-                       "color":COL_BLUE,"fontSize":"11px",
-                       "fontWeight":"700","verticalAlign":"middle",
-                       "userSelect":"none"},
-            )] if tooltip_text else []),
-        ],
-        style={"display":"inline-flex","alignItems":"center",
-               "justifyContent":"center","marginTop":"4px",
-               "position":"relative"},
-    )
+def kpi_card(label, value_str, badge=None, badge_col=None, note=None, tooltip_text=None,
+             accent=None):
+    """Redesigned KPI card with accent stripe, badge, and info tooltip."""
+    accent_color = accent or COL_BLUE
+    badge_class = "kpi-badge kpi-badge-gray"
+    if badge_col == COL_GREEN:
+        badge_class = "kpi-badge kpi-badge-green"
+    elif badge_col == COL_RED:
+        badge_class = "kpi-badge kpi-badge-red"
+
+    tooltip_el = []
+    if tooltip_text:
+        tooltip_el = [html.Span(
+            "i",
+            className="kpi-info-icon",
+            **{"data-kpi-tooltip": tooltip_text},
+        )]
 
     children = [
-        html.Div(value_str,
-                 style={"fontSize":"26px","fontWeight":"700","color":COL_NAVY,
-                        "lineHeight":"1","letterSpacing":"-0.5px"}),
-        label_content,
+        html.Div(className="kpi-card-accent", style={"--accent": accent_color}),
+        html.Div(value_str, className="kpi-value"),
+        html.Div([
+            html.Span(label, className="kpi-label"),
+            *tooltip_el,
+        ], className="kpi-label-row"),
     ]
     if badge:
-        children.append(
-            html.Div(badge,
-                     style={"fontSize":"11px","fontWeight":"600","marginTop":"6px",
-                            "color": badge_col or COL_GREY,
-                            "backgroundColor": (badge_col or COL_GREY) + "18",
-                            "borderRadius":"4px","padding":"2px 6px",
-                            "display":"inline-block"}))
+        children.append(html.Div([badge], className=badge_class))
     if note:
-        children.append(
-            html.Div(note, style={"fontSize":"10px","color":COL_GREY,"marginTop":"4px"}))
+        children.append(html.Div(note, className="kpi-note"))
 
-    return html.Div(children,
-        style={"textAlign":"center","padding":"16px 10px",
-               "backgroundColor":COL_CARD,
-               "borderRadius":"8px","boxShadow":"0 1px 6px rgba(0,0,0,0.08)",
-               "border":f"1px solid {COL_LIGHT}"})
+    return html.Div(children, className="kpi-card")
 
 
 def _section_header(text):
-    return html.H3(text,
-        style={"color":COL_NAVY,"marginTop":"0","marginBottom":"16px",
-               "borderBottom":f"2px solid {COL_LIGHT}","paddingBottom":"8px",
-               "fontSize":"16px","fontWeight":"700"})
+    return html.H3(text, className="section-header")
 
 
 def _card(children, style=None):
-    s = {"backgroundColor":COL_CARD,"padding":"20px","borderRadius":"10px",
-         "boxShadow":"0 2px 10px rgba(0,0,0,0.07)"}
+    s = {"backgroundColor": COL_CARD, "padding": "20px", "borderRadius": "12px",
+         "border": f"1px solid {COL_LIGHT}", "boxShadow": "0 1px 4px rgba(15,23,42,0.04)"}
     if style:
         s.update(style)
     return html.Div(children, style=s)
 
 
+def _phdr(title, subtitle, group=None):
+    """Page header: sticky bar with breadcrumb, title, and subtitle."""
+    crumb = []
+    if group:
+        crumb = [
+            html.Span(group, className="breadcrumb-sep"),
+            html.Span(" / ", className="breadcrumb-sep"),
+            html.Span(title, className="breadcrumb-active"),
+        ]
+    return html.Div([
+        *([html.Div(crumb, className="page-breadcrumb")] if crumb else []),
+        html.Div(title, className="page-header-title"),
+        html.Div(subtitle, className="page-header-sub"),
+    ], className="page-header")
+
+
 # ══════════════════════════════════════════════════════════════════
-# APP LAYOUT
+# APP SHELL  ─  sidebar navigation + content area
 # ══════════════════════════════════════════════════════════════════
 app = dash.Dash(__name__, title="Procurement Digital Twin",
                 suppress_callback_exceptions=True)
 
-app.layout = html.Div([
-    # Header
-    html.Div([
+# Canonical page IDs — used for pattern-matching callbacks
+NAV_PAGES = [
+    "home", "designer", "compare", "explorer", "radar",
+    "optimise", "advisor", "policy", "explain", "methodology",
+    "analysis", "admin",
+]
+
+
+def _nav_item(icon, text, page_id):
+    return html.Button(
+        [html.Span(icon, className="nav-icon"), html.Span(text)],
+        id={"type": "nav-btn", "page": page_id},
+        className="nav-item",
+        n_clicks=0,
+    )
+
+
+def _nav_group(label, items):
+    return html.Div(
+        [html.Div(label, className="nav-group-label"),
+         *[_nav_item(ic, tx, pg) for ic, tx, pg in items]],
+        className="nav-group",
+    )
+
+
+def _sidebar():
+    return html.Nav([
+        # Brand
         html.Div([
-            html.Div("🔷", style={"fontSize":"28px","marginRight":"12px"}),
+            html.Div("⬡", className="brand-mark"),
             html.Div([
-                html.H1("Procurement Digital Twin",
-                        style={"color":"white","margin":"0","fontSize":"22px",
-                               "fontWeight":"700","letterSpacing":"-0.3px"}),
-                html.P("EU procurement simulator  ·  1.1M TED contracts 2018–2023",
-                       style={"color":"#A8C4E0","margin":"2px 0 0","fontSize":"12px"}),
+                html.Div("Digital Twin", className="brand-name"),
+                html.Div("EU Procurement", className="brand-sub"),
             ]),
-        ], style={"display":"flex","alignItems":"center"}),
-    ], style={"backgroundColor":COL_NAVY,"padding":"14px 24px",
-              "borderBottom":f"4px solid {COL_BLUE}"}),
+        ], className="sidebar-brand"),
 
-    # Tabs
-    dcc.Tabs(id="tabs", value="tab-designer", className="tab-bar", children=[
-        dcc.Tab(label="🎯  Procedure Designer",   value="tab-designer"),
-        dcc.Tab(label="⚖️  Scenario Comparator",  value="tab-compare"),
-        dcc.Tab(label="🔍  Policy Explorer",       value="tab-explorer"),
-        dcc.Tab(label="🏛️  Policy Simulation",    value="tab-policy"),
-        dcc.Tab(label="💡  Explain",               value="tab-explain"),
-        dcc.Tab(label="📖  Methodology",           value="tab-methodology"),
-        dcc.Tab(label="🧪  Analysis",              value="tab-analysis"),
-        dcc.Tab(label="🏆  Optimisation Lab",      value="tab-optimise"),
-        dcc.Tab(label="🧠  AI Advisor",            value="tab-advisor"),
-        dcc.Tab(label="📊  Risk Radar",            value="tab-radar"),
-        dcc.Tab(label="⚙️  Model Admin",           value="tab-admin"),
-    ]),
+        # Home
+        html.Div([
+            _nav_item("⌂", "Overview", "home"),
+        ], className="nav-group", style={"padding": "6px 8px 2px"}),
 
-    html.Div(id="tab-content", style={"minHeight":"600px"}),
-], style={"fontFamily":"'Segoe UI', Arial, sans-serif",
-          "backgroundColor":COL_BG,"minHeight":"100vh"})
+        html.Div(className="sidebar-divider"),
+
+        _nav_group("SIMULATE", [
+            ("◎", "Procedure Designer", "designer"),
+            ("⇄", "Scenario Comparator", "compare"),
+        ]),
+        _nav_group("DISCOVER", [
+            ("◉", "Policy Explorer", "explorer"),
+            ("▦", "Risk Radar", "radar"),
+        ]),
+        _nav_group("OPTIMIZE", [
+            ("✦", "Optimisation Lab", "optimise"),
+            ("◈", "AI Advisor", "advisor"),
+        ]),
+        _nav_group("IMPACT", [
+            ("◤", "Policy Simulation", "policy"),
+        ]),
+
+        html.Div(className="sidebar-divider"),
+
+        _nav_group("LEARN", [
+            ("⊞", "Explain Models", "explain"),
+            ("◯", "Methodology", "methodology"),
+        ]),
+        _nav_group("DEVELOP", [
+            ("⟨⟩", "Analysis Sandbox", "analysis"),
+            ("⚙", "Model Admin", "admin"),
+        ]),
+
+        # Footer
+        html.Div([
+            html.Div([
+                html.Div(className="sidebar-data-pill-dot"),
+                html.Span("Models loaded", className="sidebar-data-pill-text"),
+            ], className="sidebar-data-pill"),
+            html.Div("1.1M TED contracts · 2018–2023", className="sidebar-footer-label"),
+        ], className="sidebar-footer"),
+    ], className="sidebar")
 
 
-@app.callback(Output("tab-content","children"), Input("tabs","value"))
-def render_tab(tab):
-    if tab == "tab-designer":    return designer_layout()
-    if tab == "tab-compare":     return comparator_layout()
-    if tab == "tab-explorer":    return explorer_layout()
-    if tab == "tab-policy":      return policy_layout()
-    if tab == "tab-explain":     return explain_layout()
-    if tab == "tab-methodology": return methodology_layout()
-    if tab == "tab-analysis":    return analysis_layout()
-    if tab == "tab-optimise":    return optimise_layout()
-    if tab == "tab-advisor":     return advisor_layout()
-    if tab == "tab-radar":       return radar_layout()
-    if tab == "tab-admin":       return admin_layout()
-    return html.Div("Unknown tab")
+app.layout = html.Div([
+    dcc.Store(id="nav-store", data="home"),
+    _sidebar(),
+    html.Div(
+        html.Div(id="page-content"),
+        className="main-area",
+    ),
+], className="app-shell")
+
+
+# ── Page render ───────────────────────────────────────────────────
+@app.callback(Output("page-content", "children"), Input("nav-store", "data"))
+def render_page(page):
+    dispatch = {
+        "home":        home_layout,
+        "designer":    designer_layout,
+        "compare":     comparator_layout,
+        "explorer":    explorer_layout,
+        "policy":      policy_layout,
+        "explain":     explain_layout,
+        "methodology": methodology_layout,
+        "analysis":    analysis_layout,
+        "optimise":    optimise_layout,
+        "advisor":     advisor_layout,
+        "radar":       radar_layout,
+        "admin":       admin_layout,
+    }
+    return dispatch.get(page, home_layout)()
+
+
+# ── Sidebar click handler ─────────────────────────────────────────
+@app.callback(
+    Output("nav-store", "data"),
+    Input({"type": "nav-btn", "page": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def _handle_nav(n_clicks):
+    if not ctx.triggered_id:
+        raise PreventUpdate
+    tid = ctx.triggered_id
+    if isinstance(tid, dict) and "page" in tid:
+        return tid["page"]
+    raise PreventUpdate
+
+
+# ── Active nav highlighting ───────────────────────────────────────
+@app.callback(
+    Output({"type": "nav-btn", "page": ALL}, "className"),
+    Input("nav-store", "data"),
+)
+def _update_nav_classes(page):
+    ids = [o["id"]["page"] for o in ctx.outputs_list]
+    return ["nav-item active" if p == page else "nav-item" for p in ids]
+
+
+# ══════════════════════════════════════════════════════════════════
+# HOME  ─  overview dashboard
+# ══════════════════════════════════════════════════════════════════
+def home_layout():
+    def _qs(icon, title, desc, page_id, bg):
+        return html.Button([
+            html.Div(icon, className="qs-icon", style={"background": bg}),
+            html.Div(title, className="qs-title"),
+            html.Div(desc, className="qs-desc"),
+            html.Span("→", className="qs-arrow"),
+        ], id={"type": "nav-btn", "page": page_id},
+           n_clicks=0, className="quick-start-card")
+
+    return html.Div([
+        # Page header
+        html.Div([
+            html.Div("Procurement Digital Twin", className="page-header-title"),
+            html.Div("EU procurement simulator · Monte Carlo engine · 5 ML models",
+                     className="page-header-sub"),
+        ], className="page-header"),
+
+        html.Div([
+            # Hero banner
+            html.Div([
+                html.Div([
+                    html.Div(className="home-hero-eyebrow-dot"),
+                    html.Span("Live · Models loaded"),
+                ], className="home-hero-eyebrow"),
+
+                html.Div([
+                    "Simulate any ",
+                    html.Span("EU procurement"),
+                    " procedure",
+                ], className="home-hero-title"),
+
+                html.P(
+                    "Design optimal procedures, compare policy scenarios, and understand "
+                    "competition outcomes — powered by machine learning trained on 1.1 million "
+                    "TED contract notices across 27+ European countries.",
+                    className="home-hero-sub",
+                ),
+
+                html.Div([
+                    html.Div([
+                        html.Div([html.Span("1.1"), html.Span("M", className="home-stat-sup")],
+                                 className="home-stat-val"),
+                        html.Div("TED Contracts", className="home-stat-label"),
+                    ], className="home-stat"),
+                    html.Div([
+                        html.Div("5", className="home-stat-val"),
+                        html.Div("ML Models", className="home-stat-label"),
+                    ], className="home-stat"),
+                    html.Div([
+                        html.Div([html.Span("27"), html.Span("+", className="home-stat-sup")],
+                                 className="home-stat-val"),
+                        html.Div("EU Countries", className="home-stat-label"),
+                    ], className="home-stat"),
+                    html.Div([
+                        html.Div("5K", className="home-stat-val"),
+                        html.Div("Monte Carlo samples", className="home-stat-label"),
+                    ], className="home-stat"),
+                    html.Div([
+                        html.Div("2018–23", className="home-stat-val"),
+                        html.Div("Data coverage", className="home-stat-label"),
+                    ], className="home-stat"),
+                ], className="home-stats"),
+            ], className="home-hero"),
+
+            # Quick-start cards (row 1)
+            html.Div("WHAT WOULD YOU LIKE TO DO?", className="home-section-title"),
+            html.Div([
+                _qs("🎯", "Design a Procedure",
+                    "Configure any EU procurement procedure and simulate competition, "
+                    "single-bid risk, price ratio, cross-border rate, and duration.",
+                    "designer", "#EFF6FF"),
+                _qs("⚖️", "Compare Two Scenarios",
+                    "Run side-by-side Monte Carlo simulations to find which design "
+                    "delivers better outcomes before publishing the notice.",
+                    "compare", "#F0FDF4"),
+                _qs("🔍", "Explore Historical Data",
+                    "Browse empirical distributions from 1.1M TED records. "
+                    "Filter by country, CPV sector, procedure type, and year range.",
+                    "explorer", "#ECFEFF"),
+                _qs("📊", "Risk Radar",
+                    "Scan a 10×10 heatmap of procurement segments — identify where "
+                    "single-bid risk and low competition are most acute.",
+                    "radar", "#FFF7ED"),
+            ], className="quick-start-grid"),
+
+            # Quick-start cards (row 2)
+            html.Div([
+                _qs("🏆", "Optimise Design",
+                    "Multi-objective search across the procedure design space — "
+                    "maximize competition while minimising cost, risk and duration.",
+                    "optimise", "#F5F3FF"),
+                _qs("🧠", "AI Advisor",
+                    "Get evidence-based design recommendations backed by SHAP "
+                    "feature importances and 1.1M historical benchmarks.",
+                    "advisor", "#FFF1F2"),
+                _qs("🏛️", "Policy Simulation",
+                    "Model the aggregate counterfactual impact of a policy "
+                    "intervention across an entire procurement market segment.",
+                    "policy", "#F0FDFA"),
+                _qs("💡", "Explain Predictions",
+                    "Understand exactly which parameters drive each outcome "
+                    "prediction using SHAP waterfall charts and natural-language summaries.",
+                    "explain", "#FEFCE8"),
+            ], className="quick-start-grid"),
+
+            # Info callout
+            html.Div([
+                html.Strong("Tip: "),
+                "All simulations run 5,000 Monte Carlo draws and report P10–P90 "
+                "confidence intervals. Results are calibrated per CPV sector (60%) "
+                "and country cluster (40%) against 1.1M historical contracts.",
+            ], className="info-callout", style={"marginTop": "24px"}),
+
+        ], className="page-body"),
+    ])
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -831,6 +1052,9 @@ def methodology_layout():
 
     # ── Assemble page ──────────────────────────────────────────────
     return html.Div([
+        _phdr("Methodology",
+              "How the five ML models, Monte Carlo engine, and calibration system work.",
+              "Learn"),
         # Intro banner
         html.Div([
             html.H2("How the Procurement Digital Twin works",
@@ -870,37 +1094,46 @@ def methodology_layout():
 # ══════════════════════════════════════════════════════════════════
 def designer_layout():
     return html.Div([
-        html.Div([
-            # Left form
-            _card([
-                _section_header("Procedure Parameters"),
-                build_form("d"),
-            ], style={"width":"320px","flexShrink":"0"}),
+        _phdr("Procedure Designer",
+              "Configure a procurement procedure and run a 5,000-sample Monte Carlo simulation.",
+              "Simulate"),
 
-            # Right results
-            _card([
-                _section_header("Simulation Results"),
-                dcc.Loading(
-                    id="designer-loading",
-                    type="circle",
-                    color=COL_BLUE,
-                    overlay_style={"visibility":"visible","filter":"blur(1px)"},
-                    custom_spinner=html.Div([
-                        html.Div("⚙️", style={"fontSize":"32px","marginBottom":"8px"}),
-                        html.Div("Running simulation…",
-                                 style={"fontWeight":"700","color":COL_NAVY,"fontSize":"15px"}),
-                        html.Div("Monte Carlo sampling · Calibrating · Benchmarking",
-                                 style={"fontSize":"11px","color":COL_GREY,"marginTop":"4px"}),
-                    ], style={"textAlign":"center","padding":"50px 20px"}),
-                    children=html.Div(id="designer-results",
-                        children=html.Div([
-                            html.Div("👈", style={"fontSize":"40px","marginBottom":"10px"}),
-                            html.P("Set procedure parameters and click  ▶ Simulate.",
-                                   style={"color":COL_GREY,"fontSize":"14px"}),
-                        ], style={"textAlign":"center","paddingTop":"60px"})),
-                ),
-            ], style={"flex":"1","marginLeft":"16px"}),
-        ], style={"display":"flex","padding":"20px","alignItems":"flex-start","gap":"0"}),
+        html.Div([
+            html.Div([
+                # Left: form panel
+                _card([
+                    _section_header("Procedure Parameters"),
+                    build_form("d"),
+                ], style={"width": "310px", "flexShrink": "0"}),
+
+                # Right: results panel
+                _card([
+                    _section_header("Simulation Results"),
+                    dcc.Loading(
+                        id="designer-loading",
+                        type="circle",
+                        color=COL_BLUE,
+                        overlay_style={"visibility": "visible", "filter": "blur(1px)"},
+                        custom_spinner=html.Div([
+                            html.Div("⚙️", style={"fontSize": "32px", "marginBottom": "10px"}),
+                            html.Div("Running simulation…",
+                                     style={"fontWeight": "700", "color": COL_NAVY, "fontSize": "15px"}),
+                            html.Div("Monte Carlo · Calibrating · Benchmarking",
+                                     style={"fontSize": "11px", "color": COL_GREY, "marginTop": "4px"}),
+                        ], style={"textAlign": "center", "padding": "50px 20px"}),
+                        children=html.Div(id="designer-results",
+                            children=html.Div([
+                                html.Span("◎", className="empty-state-icon"),
+                                html.Div("Configure parameters and run simulation",
+                                         className="empty-state-title"),
+                                html.Div("Set procedure parameters in the left panel "
+                                         "and click ▶ Run Simulation to see results.",
+                                         className="empty-state-sub"),
+                            ], className="empty-state")),
+                    ),
+                ], style={"flex": "1"}),
+            ], style={"display": "flex", "gap": "16px", "alignItems": "flex-start"}),
+        ], className="page-body"),
     ])
 
 
@@ -1016,13 +1249,16 @@ def run_designer(n, country, proc, ctype, cpv, crit, val, prep, dur, pw, flags):
         ("Duration",         f"{dur_median:.0f}d",   b5, c5),
     ]
 
+    # Accent colour per KPI
+    kpi_accents = [COL_BLUE, COL_RED, COL_TEAL, "#7C3AED", COL_GREEN]
+
     kpi_row = html.Div(
         [kpi_card(label, val, badge, col,
                   note=outcome_notes.get(label),
-                  tooltip_text=OUTCOME_TOOLTIPS.get(label))
-         for label, val, badge, col in kpis],
-        style={"display":"grid","gridTemplateColumns":"repeat(5,1fr)",
-               "gap":"10px","marginBottom":"20px"})
+                  tooltip_text=OUTCOME_TOOLTIPS.get(label),
+                  accent=kpi_accents[i])
+         for i, (label, val, badge, col) in enumerate(kpis)],
+        className="kpi-grid")
 
     # Distribution charts
     dist_row = html.Div([
@@ -1030,51 +1266,50 @@ def run_designer(n, country, proc, ctype, cpv, crit, val, prep, dur, pw, flags):
             figure=dist_chart(result["competition"]["samples"],
                               "Competition — offers received", COL_BLUE,
                               vline=comp_mean),
-            config={"displayModeBar":False})], style={"flex":"1"}),
+            config={"displayModeBar": False})], style={"flex": "1"}),
         html.Div([dcc.Graph(
             figure=dist_chart(result["price_ratio"]["samples"],
-                              "Price ratio — award / estimate", COL_ACCENT),
-            config={"displayModeBar":False})], style={"flex":"1"}),
+                              "Price ratio — award / estimate", "#7C3AED"),
+            config={"displayModeBar": False})], style={"flex": "1"}),
         html.Div([dcc.Graph(
             figure=dist_chart(result["duration"]["samples"],
                               "Procedure duration — days", COL_GREEN,
                               vline=dur_median),
-            config={"displayModeBar":False})], style={"flex":"1"}),
-    ], style={"display":"flex","gap":"10px","marginBottom":"14px"})
+            config={"displayModeBar": False})], style={"flex": "1"}),
+    ], style={"display": "flex", "gap": "10px", "marginBottom": "14px"})
 
-    # Single-bid and cross-border gauges
+    # Gauge bars using new CSS classes
     def gauge_bar(prob, label, color):
         pct = round(prob * 100)
         bar_color = color if pct > 25 else COL_GREEN
         return html.Div([
             html.Div([
-                html.Span(label, style={"fontSize":"12px","color":"#555","fontWeight":"600"}),
-                html.Span(f"{pct}%", style={"fontSize":"20px","fontWeight":"700",
-                                             "color":bar_color,"float":"right"}),
-            ], style={"overflow":"hidden","marginBottom":"6px"}),
-            html.Div(html.Div(style={
-                "width":f"{pct}%","height":"8px",
-                "backgroundColor":bar_color,"borderRadius":"4px",
-                "transition":"width 0.4s ease",
-            }), style={"backgroundColor":"#EEF2F7","borderRadius":"4px","overflow":"hidden"}),
-        ], style={"padding":"10px 14px","border":f"1px solid {COL_LIGHT}",
-                  "borderRadius":"8px","backgroundColor":"#F7FAFE","marginBottom":"8px"})
+                html.Span(label, className="gauge-label"),
+                html.Span(f"{pct}%", className="gauge-pct", style={"color": bar_color}),
+            ], className="gauge-header"),
+            html.Div(
+                html.Div(className="gauge-fill", style={
+                    "width": f"{pct}%", "backgroundColor": bar_color,
+                }),
+                className="gauge-track"
+            ),
+        ], className="gauge-wrapper")
 
     gauge_row = html.Div([
         html.Div([
-            gauge_bar(sb_prob,   "🔴  Single-bid risk",    COL_RED),
-            gauge_bar(cb_prob,   "🟢  Cross-border win",   COL_GREEN),
-        ], style={"flex":"1"}),
+            gauge_bar(sb_prob, "Single-bid risk", COL_RED),
+            gauge_bar(cb_prob, "Cross-border win", COL_GREEN),
+        ], style={"flex": "1"}),
         html.Div([
             html.P(
                 f"Benchmark: {bench['n_records']:,} historical procedures "
                 f"matching country={country}, procedure={proc}, CPV={cpv}",
-                style={"fontSize":"11px","color":COL_GREY,"fontStyle":"italic","margin":"0"}),
-            html.P(f"Simulation: 5,000 Monte Carlo samples · calibrated per CPV & country cluster",
-                   style={"fontSize":"10px","color":COL_GREY,"margin":"4px 0 0"}),
-        ], style={"flex":"1","display":"flex","flexDirection":"column",
-                  "justifyContent":"center","paddingLeft":"20px"}),
-    ], style={"display":"flex","gap":"20px","alignItems":"center"})
+                style={"fontSize": "11px", "color": COL_GREY, "fontStyle": "italic", "margin": "0"}),
+            html.P("Simulation: 5,000 Monte Carlo samples · calibrated per CPV & country cluster",
+                   style={"fontSize": "10px", "color": COL_GREY, "margin": "4px 0 0"}),
+        ], style={"flex": "1", "display": "flex", "flexDirection": "column",
+                  "justifyContent": "center", "paddingLeft": "20px"}),
+    ], style={"display": "flex", "gap": "20px", "alignItems": "center"})
 
     return html.Div([kpi_row, dist_row, gauge_row])
 
@@ -1084,51 +1319,58 @@ def run_designer(n, country, proc, ctype, cpv, crit, val, prep, dur, pw, flags):
 # ══════════════════════════════════════════════════════════════════
 def comparator_layout():
     return html.Div([
-        html.Div([
-            _card([
-                html.H3("Scenario A",
-                        style={"color":COL_BLUE,"marginTop":"0",
-                               "borderBottom":f"3px solid {COL_BLUE}",
-                               "paddingBottom":"8px","fontSize":"16px"}),
-                build_form("ca", {"country":"DE","proc":"OPE","crit":"L",
-                                   "val":2_000_000,"cpv":"45"}),
-            ], style={"flex":"1"}),
-            _card([
-                html.H3("Scenario B",
-                        style={"color":COL_ACCENT,"marginTop":"0",
-                               "borderBottom":f"3px solid {COL_ACCENT}",
-                               "paddingBottom":"8px","fontSize":"16px"}),
-                build_form("cb", {"country":"DE","proc":"OPE","crit":"M",
-                                   "val":2_000_000,"cpv":"45"}),
-            ], style={"flex":"1","marginLeft":"14px"}),
-        ], style={"display":"flex","padding":"20px 20px 0 20px"}),
+        _phdr("Scenario Comparator",
+              "Configure two procedure designs side-by-side and compare outcomes to find the better approach.",
+              "Simulate"),
 
         html.Div([
-            html.Button("⚖️  Compare Scenarios", id="compare-btn", n_clicks=0,
-                        style={"padding":"12px 36px","fontSize":"15px","fontWeight":"600",
-                               "backgroundColor":COL_NAVY,"color":"white","border":"none",
-                               "borderRadius":"6px","cursor":"pointer",
-                               "boxShadow":"0 2px 8px rgba(0,0,0,0.18)"}),
-            html.Div(id="compare-status", style={
-                "fontSize":"12px","color":COL_BLUE,"marginTop":"8px",
-                "minHeight":"18px","fontStyle":"italic",
-            }),
-        ], style={"textAlign":"center","padding":"16px"}),
+            # Two scenario forms side by side
+            html.Div([
+                _card([
+                    html.H3("Scenario A",
+                            style={"color": COL_BLUE, "marginTop": "0",
+                                   "borderBottom": f"3px solid {COL_BLUE}",
+                                   "paddingBottom": "8px", "fontSize": "16px",
+                                   "letterSpacing": "-0.3px"}),
+                    build_form("ca", {"country": "DE", "proc": "OPE", "crit": "L",
+                                      "val": 2_000_000, "cpv": "45"}),
+                ], style={"flex": "1"}),
+                _card([
+                    html.H3("Scenario B",
+                            style={"color": COL_ACCENT, "marginTop": "0",
+                                   "borderBottom": f"3px solid {COL_ACCENT}",
+                                   "paddingBottom": "8px", "fontSize": "16px",
+                                   "letterSpacing": "-0.3px"}),
+                    build_form("cb", {"country": "DE", "proc": "OPE", "crit": "M",
+                                      "val": 2_000_000, "cpv": "45"}),
+                ], style={"flex": "1"}),
+            ], style={"display": "flex", "gap": "16px", "marginBottom": "16px"}),
 
-        dcc.Loading(
-            id="compare-loading",
-            type="circle",
-            color=COL_BLUE,
-            overlay_style={"visibility":"visible","filter":"blur(1px)"},
-            custom_spinner=html.Div([
-                html.Div("⚙️", style={"fontSize":"32px","marginBottom":"8px"}),
-                html.Div("Comparing scenarios…",
-                         style={"fontWeight":"700","color":COL_NAVY,"fontSize":"15px"}),
-                html.Div("Simulating A · Simulating B · Computing deltas",
-                         style={"fontSize":"11px","color":COL_GREY,"marginTop":"4px"}),
-            ], style={"textAlign":"center","padding":"50px 20px"}),
-            children=html.Div(id="compare-results", style={"padding":"0 20px 20px"}),
-        ),
+            # Compare button
+            html.Div([
+                html.Button("⚖️  Compare Scenarios", id="compare-btn", n_clicks=0,
+                            className="btn-compare"),
+                html.Div(id="compare-status", style={
+                    "fontSize": "12px", "color": COL_BLUE, "marginTop": "8px",
+                    "minHeight": "16px", "fontStyle": "italic", "textAlign": "center",
+                }),
+            ], style={"textAlign": "center", "marginBottom": "16px"}),
+
+            dcc.Loading(
+                id="compare-loading",
+                type="circle",
+                color=COL_BLUE,
+                overlay_style={"visibility": "visible", "filter": "blur(1px)"},
+                custom_spinner=html.Div([
+                    html.Div("⚙️", style={"fontSize": "32px", "marginBottom": "8px"}),
+                    html.Div("Comparing scenarios…",
+                             style={"fontWeight": "700", "color": COL_NAVY, "fontSize": "15px"}),
+                    html.Div("Simulating A · Simulating B · Computing deltas",
+                             style={"fontSize": "11px", "color": COL_GREY, "marginTop": "4px"}),
+                ], style={"textAlign": "center", "padding": "50px 20px"}),
+                children=html.Div(id="compare-results"),
+            ),
+        ], className="page-body"),
     ])
 
 
@@ -1256,6 +1498,9 @@ def explorer_layout():
         ], style={"padding":"40px"})
 
     return html.Div([
+        _phdr("Policy Explorer",
+              "Explore empirical distributions from 1.1M TED contract records. Filter by country, sector, and year.",
+              "Discover"),
         html.Div([
             _card([
                 _section_header("Filter historical data"),
@@ -1420,9 +1665,12 @@ def run_explorer(n, countries, procs, cpvs, years, outcome):
 # ══════════════════════════════════════════════════════════════════
 def policy_layout():
     return html.Div([
+        _phdr("Policy Simulation",
+              "Model the counterfactual impact of a policy intervention across a market segment.",
+              "Impact"),
         html.Div([
             _card([
-                _section_header("🏛️  Policy Intervention"),
+                _section_header("Policy Intervention"),
                 html.P("Select a target segment and a policy change, then simulate "
                        "the aggregate impact across matching historical procedures.",
                        style={"fontSize":"12px","color":COL_GREY,"marginTop":"-8px",
@@ -1690,9 +1938,12 @@ def explain_layout():
         ], style={"marginBottom":"16px"})
 
     return html.Div([
+        _phdr("Explain Models",
+              "Understand which procedure parameters drive each prediction using SHAP feature importance.",
+              "Learn"),
         html.Div([
             _card([
-                _section_header("💡  Model Explainability"),
+                _section_header("Model Explainability"),
 
                 # Global importances
                 html.H4("Global Feature Importance",
@@ -2255,17 +2506,10 @@ def analysis_layout():
     ])
 
     return html.Div([
-        # ── Header ───────────────────────────────────────────────────
-        html.Div([
-            html.H3("🧪 Analysis Sandbox",
-                    style={"margin": "0 0 4px", "color": COL_NAVY}),
-            html.P("Write Python against the procurement twin's models and data. "
-                   "Results render inline — text via print(), charts via show(fig). "
-                   "Execution is sandboxed and limited to 30 s.",
-                   style={"margin": 0, "fontSize": "13px", "color": "#555"}),
-        ], style={"backgroundColor": COL_CARD, "padding": "14px 20px",
-                  "borderRadius": "8px", "marginBottom": "10px",
-                  "boxShadow": "0 1px 4px rgba(0,0,0,0.08)"}),
+        _phdr("Analysis Sandbox",
+              "Write Python against the procurement twin's models and 1.1M-row dataset. "
+              "Results render inline. Execution sandboxed, 30s timeout.",
+              "Develop"),
 
         # ── Reference guide (collapsible) ─────────────────────────────
         reference_panel,
@@ -2428,8 +2672,13 @@ def optimise_layout():
         ]),
     ], style={"flex":"1","overflowY":"auto","maxHeight":"85vh","paddingLeft":"20px"})
 
-    return html.Div([left, right],
-                    style={"display":"flex","gap":"0","padding":"20px","alignItems":"flex-start","minHeight":"80vh"})
+    return html.Div([
+        _phdr("Optimisation Lab",
+              "Multi-objective search across the procedure design space. Maximize competition while minimising cost, risk, and duration.",
+              "Optimize"),
+        html.Div([left, right],
+                 style={"display":"flex","gap":"0","padding":"20px","alignItems":"flex-start","minHeight":"80vh"}),
+    ])
 
 
 @app.callback(
@@ -3610,138 +3859,18 @@ def _read_pills():
 
 
 # ══════════════════════════════════════════════════════════════════
-# INLINE CSS
+# HTML TEMPLATE  ─  load Inter font; all styles are in assets/style.css
 # ══════════════════════════════════════════════════════════════════
-app.index_string = '''
-<!DOCTYPE html>
-<html>
+app.index_string = '''<!DOCTYPE html>
+<html lang="en">
 <head>
 {%metas%}
 <title>{%title%}</title>
 {%favicon%}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 {%css%}
-<style>
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: "Segoe UI", Arial, sans-serif;
-         background: #F0F4F8; }
-
-  /* Form */
-  .form-label { display: block; font-size: 11px; font-weight: 600;
-                color: #555; margin: 0 0 4px 0; text-transform: uppercase;
-                letter-spacing: 0.3px; }
-  .form-group  { margin-bottom: 13px; }
-  .form-panel  { padding: 0; }
-
-  /* Buttons */
-  .btn-primary { width: 100%; padding: 11px; background: #1F3864;
-                 color: white; border: none; border-radius: 6px;
-                 font-size: 14px; font-weight: 600; cursor: pointer;
-                 margin-top: 10px; transition: background 0.2s; }
-  .btn-primary:hover { background: #2E75B6; }
-
-  /* Radio / checklist */
-  .radio-inline label { margin-right: 14px; font-size: 13px; cursor: pointer; }
-  .radio-block  label { display: block; margin-bottom: 6px; font-size: 13px;
-                        cursor: pointer; }
-  .checklist    label { font-size: 12px; cursor: pointer; display: block;
-                        margin-bottom: 4px; }
-
-  /* Tabs */
-  .tab-bar .tab { font-size: 13px; font-weight: 600;
-                  padding: 10px 16px; border: none !important;
-                  color: #555 !important; background: #E8EDF2 !important;
-                  border-radius: 0 !important; }
-  .tab-bar .tab--selected { color: #1F3864 !important;
-                             background: #F0F4F8 !important;
-                             border-bottom: 3px solid #2E75B6 !important; }
-  .tab-bar { border-bottom: 1px solid #D0D8E4 !important; }
-
-  /* Dropdowns */
-  .Select-control { font-size: 13px !important; border-radius: 4px !important; }
-  .Select-menu-outer { font-size: 13px !important; }
-
-  /* Scrollbar */
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: #F0F4F8; }
-  ::-webkit-scrollbar-thumb { background: #C0CCDA; border-radius: 3px; }
-
-  /* ── KPI info tooltip ──────────────────────────────────────────── */
-  .kpi-info-icon {
-    position: relative;
-    display: inline-block;
-  }
-  .kpi-info-icon::after {
-    content: attr(data-kpi-tooltip);
-    position: absolute;
-    bottom: calc(100% + 6px);
-    left: 50%;
-    transform: translateX(-50%);
-    background: #1F3864;
-    color: #fff;
-    font-size: 11px;
-    font-weight: 400;
-    line-height: 1.45;
-    padding: 8px 10px;
-    border-radius: 6px;
-    width: 220px;
-    white-space: normal;
-    text-align: left;
-    text-transform: none;
-    letter-spacing: 0;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.18s ease;
-    z-index: 9999;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.22);
-  }
-  .kpi-info-icon::before {
-    content: "";
-    position: absolute;
-    bottom: calc(100% + 1px);
-    left: 50%;
-    transform: translateX(-50%);
-    border: 5px solid transparent;
-    border-top-color: #1F3864;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.18s ease;
-    z-index: 9999;
-  }
-  .kpi-info-icon:hover::after,
-  .kpi-info-icon:hover::before { opacity: 1; }
-
-  /* ── Methodology tab ───────────────────────────────────────────── */
-  .meth-model-card {
-    background: #fff;
-    border-radius: 10px;
-    padding: 18px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-    flex: 1;
-    min-width: 0;
-  }
-  .meth-section-title {
-    color: #1F3864;
-    font-size: 15px;
-    font-weight: 700;
-    margin: 0 0 12px 0;
-    padding-bottom: 8px;
-    border-bottom: 2px solid #D5E8F0;
-  }
-  .meth-pipeline-step {
-    flex: 1;
-    text-align: center;
-    border-radius: 8px;
-    padding: 12px 10px;
-    color: white;
-  }
-  .meth-limitation-row {
-    padding: 10px 14px;
-    background: #FFFBF0;
-    border-left: 3px solid #E67E22;
-    border-radius: 6px;
-    margin-bottom: 8px;
-  }
-</style>
 </head>
 <body>
 {%app_entry%}
@@ -3751,8 +3880,7 @@ app.index_string = '''
 {%renderer%}
 </footer>
 </body>
-</html>
-'''
+</html>'''
 
 if __name__ == "__main__":
     print("\n" + "="*60)

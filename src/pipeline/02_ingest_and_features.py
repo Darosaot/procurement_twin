@@ -79,6 +79,9 @@ logger.info("="*60)
 logger.info("\n[1/5] Streaming CAN → contract-level outcomes...")
 t0 = time.time()
 
+# DURATION is a CFC-side field (contract duration from the call for competition).
+# It does not exist in the CAN export, so it is excluded here and sourced from CFC
+# after the join (Step 3). contract_duration_months is derived from CFC.DURATION at Step 4.
 can = (
     pl.scan_csv(CAN_FILE, infer_schema_length=5000, ignore_errors=True, null_values=["","NA","N/A"])
     .select(["ID_NOTICE_CAN","YEAR","DT_DISPATCH","DT_AWARD",
@@ -87,7 +90,7 @@ can = (
              "WIN_COUNTRY_CODE","B_CONTRACTOR_SME",
              "NUMBER_OFFERS","NUMBER_TENDERS_SME","NUMBER_TENDERS_OTHER_EU",
              "NUMBER_TENDERS_NON_EU","AWARD_VALUE_EURO","AWARD_EST_VALUE_EURO",
-             "B_GPA","B_EU_FUNDS","LOTS_NUMBER","DURATION","VALUE_EURO",
+             "B_GPA","B_EU_FUNDS","LOTS_NUMBER","VALUE_EURO",
              "INFO_ON_NON_AWARD"])
     .with_columns([
         pl.col("NUMBER_OFFERS").cast(pl.Float64, strict=False),
@@ -121,7 +124,6 @@ can = (
         pl.col("B_GPA").first(),
         pl.col("B_EU_FUNDS").first(),
         pl.col("LOTS_NUMBER").max(),
-        pl.col("DURATION").max(),
         pl.col("VALUE_EURO").sum(),
         pl.col("INFO_ON_NON_AWARD").first(),
     ])
@@ -320,7 +322,11 @@ proc = proc.with_columns([
     pl.Series("contract_type_label",[CONTRACT_LABELS.get(str(t),str(t)) if t else "Unknown" for t in proc["TYPE_OF_CONTRACT"].to_list()]),
 ])
 proc = proc.with_columns(pl.col("CRIT_PRICE_WEIGHT").cast(pl.Float64, strict=False).alias("price_weight_pct"))
-proc = proc.with_columns(pl.col("DURATION").cast(pl.Float64, strict=False).alias("contract_duration_months"))
+# DURATION comes from CFC; CAN-only records will have null for this field.
+if "DURATION" in proc.columns:
+    proc = proc.with_columns(pl.col("DURATION").cast(pl.Float64, strict=False).alias("contract_duration_months"))
+else:
+    proc = proc.with_columns(pl.lit(None).cast(pl.Float64).alias("contract_duration_months"))
 
 # Boolean flags
 for col in ["B_GPA","B_EU_FUNDS","B_FRA_AGREEMENT","B_DYN_PURCH_SYST","B_ELECTRONIC_AUCTION","B_ACCELERATED","CANCELLED"]:
