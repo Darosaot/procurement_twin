@@ -161,16 +161,16 @@ CLUSTER_OPTIONS = [
 ]
 
 # ── Colour palette ────────────────────────────────────────────────
-COL_NAVY   = "#1F3864"
-COL_BLUE   = "#2E75B6"
-COL_LIGHT  = "#D5E8F0"
-COL_TEAL   = "#00A7A7"
-COL_GREEN  = "#217346"
-COL_RED    = "#C00000"
-COL_ORANGE = "#E67E22"
-COL_GREY   = "#8C9099"
-COL_ACCENT = "#4472C4"
-COL_BG     = "#F0F4F8"
+COL_NAVY   = "#0F172A"
+COL_BLUE   = "#2563EB"
+COL_LIGHT  = "#E2E8F0"
+COL_TEAL   = "#0891B2"
+COL_GREEN  = "#059669"
+COL_RED    = "#DC2626"
+COL_ORANGE = "#D97706"
+COL_GREY   = "#64748B"
+COL_ACCENT = "#7C3AED"
+COL_BG     = "#F1F5F9"
 COL_CARD   = "#FFFFFF"
 
 # ── Per-outcome tooltip texts (shown on ℹ️ hover in Designer & Comparator) ──
@@ -317,81 +317,57 @@ def dist_chart(samples, label, color, vline=None, height=200):
     arr = np.array(samples)
     fig = go.Figure()
     fig.add_trace(go.Histogram(x=arr, nbinsx=40, marker_color=color,
-                               opacity=0.78, name=label))
+                               opacity=0.82, name=label))
     if vline is not None:
         fig.add_vline(x=vline, line_dash="dash", line_color=COL_RED,
-                      line_width=2,
+                      line_width=1.5,
                       annotation_text=f"  {vline:.2f}",
                       annotation_font=dict(size=11, color=COL_RED))
     fig.update_layout(
-        title=dict(text=label, font=dict(size=12, color="#333")),
+        title=dict(text=label, font=dict(size=12, color=COL_GREY, family="Inter, sans-serif")),
         height=height, margin=dict(t=36, b=26, l=36, r=12),
-        paper_bgcolor=COL_CARD, plot_bgcolor=COL_CARD,
+        paper_bgcolor=COL_CARD, plot_bgcolor="#F8FAFC",
         showlegend=False,
-        xaxis=dict(gridcolor="#EEE", linecolor="#CCC"),
-        yaxis=dict(gridcolor="#EEE", linecolor="#CCC"),
+        font=dict(family="Inter, sans-serif"),
+        xaxis=dict(gridcolor=COL_LIGHT, linecolor=COL_LIGHT, tickfont=dict(size=10)),
+        yaxis=dict(gridcolor=COL_LIGHT, linecolor=COL_LIGHT, tickfont=dict(size=10)),
     )
     return fig
 
 
 def kpi_card(label, value_str, badge=None, badge_col=None, note=None, tooltip_text=None):
-    """Polished KPI card with optional badge, benchmark note, and hover tooltip."""
-    # Label row: text + optional ℹ️ tooltip icon
-    label_content = html.Div(
-        [
-            html.Span(label,
-                      style={"fontSize":"11px","color":COL_GREY,
-                             "textTransform":"uppercase","letterSpacing":"0.5px"}),
-            *([html.Span(
-                "ⓘ",
-                className="kpi-info-icon",
-                **{"data-kpi-tooltip": tooltip_text},
-                style={"marginLeft":"4px","cursor":"help",
-                       "color":COL_BLUE,"fontSize":"11px",
-                       "fontWeight":"700","verticalAlign":"middle",
-                       "userSelect":"none"},
-            )] if tooltip_text else []),
-        ],
-        style={"display":"inline-flex","alignItems":"center",
-               "justifyContent":"center","marginTop":"4px",
-               "position":"relative"},
-    )
+    label_row = html.Div([
+        html.Span(label, className="kpi-label"),
+        *([html.Span("ⓘ", className="kpi-info-icon",
+                     **{"data-kpi-tooltip": tooltip_text},
+                     style={"marginLeft":"4px","cursor":"help","color":COL_BLUE,
+                            "fontSize":"11px","fontWeight":"700","verticalAlign":"middle",
+                            "userSelect":"none"})]
+          if tooltip_text else []),
+    ], style={"display":"inline-flex","alignItems":"center",
+              "justifyContent":"center","position":"relative"})
 
     children = [
-        html.Div(value_str,
-                 style={"fontSize":"26px","fontWeight":"700","color":COL_NAVY,
-                        "lineHeight":"1","letterSpacing":"-0.5px"}),
-        label_content,
+        html.Div(value_str, className="kpi-value"),
+        label_row,
     ]
     if badge:
-        children.append(
-            html.Div(badge,
-                     style={"fontSize":"11px","fontWeight":"600","marginTop":"6px",
-                            "color": badge_col or COL_GREY,
-                            "backgroundColor": (badge_col or COL_GREY) + "18",
-                            "borderRadius":"4px","padding":"2px 6px",
-                            "display":"inline-block"}))
+        children.append(html.Div(badge, className="kpi-badge",
+            style={"color": badge_col or COL_GREY,
+                   "backgroundColor": (badge_col or COL_GREY) + "18"}))
     if note:
-        children.append(
-            html.Div(note, style={"fontSize":"10px","color":COL_GREY,"marginTop":"4px"}))
+        children.append(html.Div(note, className="kpi-note"))
 
-    return html.Div(children,
-        style={"textAlign":"center","padding":"16px 10px",
-               "backgroundColor":COL_CARD,
-               "borderRadius":"8px","boxShadow":"0 1px 6px rgba(0,0,0,0.08)",
-               "border":f"1px solid {COL_LIGHT}"})
+    return html.Div(children, className="kpi-card")
 
 
 def _section_header(text):
-    return html.H3(text,
-        style={"color":COL_NAVY,"marginTop":"0","marginBottom":"16px",
-               "borderBottom":f"2px solid {COL_LIGHT}","paddingBottom":"8px",
-               "fontSize":"16px","fontWeight":"700"})
+    return html.H3(text, className="section-title")
 
 
 def _card(children, style=None):
     s = {"backgroundColor":COL_CARD,"padding":"20px","borderRadius":"10px",
-         "boxShadow":"0 2px 10px rgba(0,0,0,0.07)"}
+         "boxShadow":"0 1px 4px rgba(15,23,42,0.06)","border":f"1px solid {COL_LIGHT}"}
     if style:
         s.update(style)
     return html.Div(children, style=s)
@@ -403,43 +379,96 @@ def _card(children, style=None):
 app = dash.Dash(__name__, title="Procurement Digital Twin",
                 suppress_callback_exceptions=True)
 
-app.layout = html.Div([
-    # Header
-    html.Div([
-        html.Div([
-            html.Div("🔷", style={"fontSize":"28px","marginRight":"12px"}),
-            html.Div([
-                html.H1("Procurement Digital Twin",
-                        style={"color":"white","margin":"0","fontSize":"22px",
-                               "fontWeight":"700","letterSpacing":"-0.3px"}),
-                html.P("EU procurement simulator  ·  1.1M TED contracts 2018–2023",
-                       style={"color":"#A8C4E0","margin":"2px 0 0","fontSize":"12px"}),
-            ]),
-        ], style={"display":"flex","alignItems":"center"}),
-    ], style={"backgroundColor":COL_NAVY,"padding":"14px 24px",
-              "borderBottom":f"4px solid {COL_BLUE}"}),
-
-    # Tabs
-    dcc.Tabs(id="tabs", value="tab-designer", className="tab-bar", children=[
-        dcc.Tab(label="🎯  Procedure Designer",   value="tab-designer"),
-        dcc.Tab(label="⚖️  Scenario Comparator",  value="tab-compare"),
-        dcc.Tab(label="🔍  Policy Explorer",       value="tab-explorer"),
-        dcc.Tab(label="🏛️  Policy Simulation",    value="tab-policy"),
-        dcc.Tab(label="💡  Explain",               value="tab-explain"),
-        dcc.Tab(label="📖  Methodology",           value="tab-methodology"),
-        dcc.Tab(label="🧪  Analysis",              value="tab-analysis"),
-        dcc.Tab(label="🏆  Optimisation Lab",      value="tab-optimise"),
-        dcc.Tab(label="🧠  AI Advisor",            value="tab-advisor"),
-        dcc.Tab(label="📊  Risk Radar",            value="tab-radar"),
-        dcc.Tab(label="⚙️  Model Admin",           value="tab-admin"),
+_NAV_GROUPS = [
+    ("CORE TOOLS", [
+        ("🎯", "Procedure Designer",  "tab-designer"),
+        ("⚖️", "Scenario Comparator", "tab-compare"),
+        ("🔍", "Policy Explorer",     "tab-explorer"),
+        ("🏛️", "Policy Simulation",   "tab-policy"),
     ]),
+    ("ANALYSIS", [
+        ("📊", "Risk Radar",          "tab-radar"),
+        ("🧠", "AI Advisor",          "tab-advisor"),
+        ("💡", "Explain",             "tab-explain"),
+        ("🏆", "Optimisation Lab",    "tab-optimise"),
+    ]),
+    ("REFERENCE", [
+        ("🧪", "Analysis Sandbox",   "tab-analysis"),
+        ("📖", "Methodology",         "tab-methodology"),
+    ]),
+    ("SYSTEM", [
+        ("⚙️", "Model Admin",         "tab-admin"),
+    ]),
+]
 
-    html.Div(id="tab-content", style={"minHeight":"600px"}),
-], style={"fontFamily":"'Segoe UI', Arial, sans-serif",
-          "backgroundColor":COL_BG,"minHeight":"100vh"})
+
+def _nav_item(icon, label, tab_id):
+    return html.Div([
+        html.Span(icon, className="nav-icon"),
+        html.Span(label, className="nav-label"),
+    ], id={"type": "nav-btn", "index": tab_id},
+       className="nav-item", n_clicks=0)
 
 
-@app.callback(Output("tab-content","children"), Input("tabs","value"))
+def _build_sidebar():
+    nav_children = []
+    for group_label, items in _NAV_GROUPS:
+        nav_children.append(html.Div(group_label, className="nav-group-label"))
+        for icon, label, tab_id in items:
+            nav_children.append(_nav_item(icon, label, tab_id))
+
+    return html.Div([
+        html.Div([
+            html.Div("🔷", className="sidebar-logo-icon"),
+            html.Div([
+                html.Div("Procurement", className="sidebar-logo-text-primary"),
+                html.Div("Digital Twin", className="sidebar-logo-text-secondary"),
+            ]),
+        ], className="sidebar-logo"),
+        html.Div(nav_children, className="sidebar-nav"),
+        html.Div("EU TED · 1.1M contracts · 2018–2023",
+                 className="sidebar-footer"),
+    ], className="sidebar")
+
+
+app.layout = html.Div([
+    _build_sidebar(),
+    html.Div([
+        html.Div(id="tab-content", style={"minHeight":"100vh"}),
+    ], className="main"),
+    dcc.Store(id="nav-store", data="tab-designer"),
+], className="app-root")
+
+
+from dash import ALL
+from dash.exceptions import PreventUpdate
+
+
+@app.callback(
+    Output("nav-store", "data"),
+    Input({"type": "nav-btn", "index": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def _update_nav(_):
+    triggered = ctx.triggered_id
+    if triggered:
+        return triggered["index"]
+    raise PreventUpdate
+
+
+@app.callback(
+    Output({"type": "nav-btn", "index": ALL}, "className"),
+    Input("nav-store", "data"),
+)
+def _set_active_nav(current_tab):
+    return [
+        "nav-item nav-item--active"
+        if item["id"]["index"] == current_tab else "nav-item"
+        for item in ctx.outputs_list
+    ]
+
+
+@app.callback(Output("tab-content", "children"), Input("nav-store", "data"))
 def render_tab(tab):
     if tab == "tab-designer":    return designer_layout()
     if tab == "tab-compare":     return comparator_layout()
@@ -900,7 +929,7 @@ def designer_layout():
                         ], style={"textAlign":"center","paddingTop":"60px"})),
                 ),
             ], style={"flex":"1","marginLeft":"16px"}),
-        ], style={"display":"flex","padding":"20px","alignItems":"flex-start","gap":"0"}),
+        ], style={"display":"flex","padding":"24px","alignItems":"flex-start","gap":"16px"}),
     ])
 
 
@@ -1048,17 +1077,17 @@ def run_designer(n, country, proc, ctype, cpv, crit, val, prep, dur, pw, flags):
         bar_color = color if pct > 25 else COL_GREEN
         return html.Div([
             html.Div([
-                html.Span(label, style={"fontSize":"12px","color":"#555","fontWeight":"600"}),
+                html.Span(label, style={"fontSize":"12px","color":COL_NAVY,"fontWeight":"600"}),
                 html.Span(f"{pct}%", style={"fontSize":"20px","fontWeight":"700",
-                                             "color":bar_color,"float":"right"}),
-            ], style={"overflow":"hidden","marginBottom":"6px"}),
+                                             "color":bar_color,"float":"right",
+                                             "letterSpacing":"-0.5px"}),
+            ], style={"overflow":"hidden","marginBottom":"8px"}),
             html.Div(html.Div(style={
-                "width":f"{pct}%","height":"8px",
-                "backgroundColor":bar_color,"borderRadius":"4px",
-                "transition":"width 0.4s ease",
-            }), style={"backgroundColor":"#EEF2F7","borderRadius":"4px","overflow":"hidden"}),
-        ], style={"padding":"10px 14px","border":f"1px solid {COL_LIGHT}",
-                  "borderRadius":"8px","backgroundColor":"#F7FAFE","marginBottom":"8px"})
+                "width":f"{pct}%","height":"7px",
+                "backgroundColor":bar_color,"borderRadius":"99px",
+                "transition":"width 0.5s cubic-bezier(0.4,0,0.2,1)",
+            }), className="gauge-bar-track"),
+        ], className="gauge-bar")
 
     gauge_row = html.Div([
         html.Div([
@@ -3617,131 +3646,12 @@ app.index_string = '''
 <html>
 <head>
 {%metas%}
-<title>{%title%}</title>
+<title>Procurement Digital Twin</title>
 {%favicon%}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 {%css%}
-<style>
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: "Segoe UI", Arial, sans-serif;
-         background: #F0F4F8; }
-
-  /* Form */
-  .form-label { display: block; font-size: 11px; font-weight: 600;
-                color: #555; margin: 0 0 4px 0; text-transform: uppercase;
-                letter-spacing: 0.3px; }
-  .form-group  { margin-bottom: 13px; }
-  .form-panel  { padding: 0; }
-
-  /* Buttons */
-  .btn-primary { width: 100%; padding: 11px; background: #1F3864;
-                 color: white; border: none; border-radius: 6px;
-                 font-size: 14px; font-weight: 600; cursor: pointer;
-                 margin-top: 10px; transition: background 0.2s; }
-  .btn-primary:hover { background: #2E75B6; }
-
-  /* Radio / checklist */
-  .radio-inline label { margin-right: 14px; font-size: 13px; cursor: pointer; }
-  .radio-block  label { display: block; margin-bottom: 6px; font-size: 13px;
-                        cursor: pointer; }
-  .checklist    label { font-size: 12px; cursor: pointer; display: block;
-                        margin-bottom: 4px; }
-
-  /* Tabs */
-  .tab-bar .tab { font-size: 13px; font-weight: 600;
-                  padding: 10px 16px; border: none !important;
-                  color: #555 !important; background: #E8EDF2 !important;
-                  border-radius: 0 !important; }
-  .tab-bar .tab--selected { color: #1F3864 !important;
-                             background: #F0F4F8 !important;
-                             border-bottom: 3px solid #2E75B6 !important; }
-  .tab-bar { border-bottom: 1px solid #D0D8E4 !important; }
-
-  /* Dropdowns */
-  .Select-control { font-size: 13px !important; border-radius: 4px !important; }
-  .Select-menu-outer { font-size: 13px !important; }
-
-  /* Scrollbar */
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: #F0F4F8; }
-  ::-webkit-scrollbar-thumb { background: #C0CCDA; border-radius: 3px; }
-
-  /* ── KPI info tooltip ──────────────────────────────────────────── */
-  .kpi-info-icon {
-    position: relative;
-    display: inline-block;
-  }
-  .kpi-info-icon::after {
-    content: attr(data-kpi-tooltip);
-    position: absolute;
-    bottom: calc(100% + 6px);
-    left: 50%;
-    transform: translateX(-50%);
-    background: #1F3864;
-    color: #fff;
-    font-size: 11px;
-    font-weight: 400;
-    line-height: 1.45;
-    padding: 8px 10px;
-    border-radius: 6px;
-    width: 220px;
-    white-space: normal;
-    text-align: left;
-    text-transform: none;
-    letter-spacing: 0;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.18s ease;
-    z-index: 9999;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.22);
-  }
-  .kpi-info-icon::before {
-    content: "";
-    position: absolute;
-    bottom: calc(100% + 1px);
-    left: 50%;
-    transform: translateX(-50%);
-    border: 5px solid transparent;
-    border-top-color: #1F3864;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.18s ease;
-    z-index: 9999;
-  }
-  .kpi-info-icon:hover::after,
-  .kpi-info-icon:hover::before { opacity: 1; }
-
-  /* ── Methodology tab ───────────────────────────────────────────── */
-  .meth-model-card {
-    background: #fff;
-    border-radius: 10px;
-    padding: 18px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-    flex: 1;
-    min-width: 0;
-  }
-  .meth-section-title {
-    color: #1F3864;
-    font-size: 15px;
-    font-weight: 700;
-    margin: 0 0 12px 0;
-    padding-bottom: 8px;
-    border-bottom: 2px solid #D5E8F0;
-  }
-  .meth-pipeline-step {
-    flex: 1;
-    text-align: center;
-    border-radius: 8px;
-    padding: 12px 10px;
-    color: white;
-  }
-  .meth-limitation-row {
-    padding: 10px 14px;
-    background: #FFFBF0;
-    border-left: 3px solid #E67E22;
-    border-radius: 6px;
-    margin-bottom: 8px;
-  }
-</style>
 </head>
 <body>
 {%app_entry%}
