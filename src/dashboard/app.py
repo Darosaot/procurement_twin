@@ -334,19 +334,20 @@ def dist_chart(samples, label, color, vline=None, height=200):
     arr = np.array(samples)
     fig = go.Figure()
     fig.add_trace(go.Histogram(x=arr, nbinsx=40, marker_color=color,
-                               opacity=0.78, name=label))
+                               opacity=0.82, name=label))
     if vline is not None:
         fig.add_vline(x=vline, line_dash="dash", line_color=COL_RED,
-                      line_width=2,
+                      line_width=1.5,
                       annotation_text=f"  {vline:.2f}",
                       annotation_font=dict(size=11, color=COL_RED))
     fig.update_layout(
-        title=dict(text=label, font=dict(size=12, color="#333")),
+        title=dict(text=label, font=dict(size=12, color=COL_GREY, family="Inter, sans-serif")),
         height=height, margin=dict(t=36, b=26, l=36, r=12),
-        paper_bgcolor=COL_CARD, plot_bgcolor=COL_CARD,
+        paper_bgcolor=COL_CARD, plot_bgcolor="#F8FAFC",
         showlegend=False,
-        xaxis=dict(gridcolor="#EEE", linecolor="#CCC"),
-        yaxis=dict(gridcolor="#EEE", linecolor="#CCC"),
+        font=dict(family="Inter, sans-serif"),
+        xaxis=dict(gridcolor=COL_LIGHT, linecolor=COL_LIGHT, tickfont=dict(size=10)),
+        yaxis=dict(gridcolor=COL_LIGHT, linecolor=COL_LIGHT, tickfont=dict(size=10)),
     )
     return fig
 
@@ -3865,7 +3866,7 @@ app.index_string = '''<!DOCTYPE html>
 <html lang="en">
 <head>
 {%metas%}
-<title>{%title%}</title>
+<title>Procurement Digital Twin</title>
 {%favicon%}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
