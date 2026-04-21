@@ -81,9 +81,13 @@ t0 = time.time()
 
 can = (
     pl.scan_csv(CAN_FILE, infer_schema_length=5000, ignore_errors=True, null_values=["","NA","N/A"])
-    .select(["ID_NOTICE_CAN","DT_AWARD","WIN_COUNTRY_CODE","B_CONTRACTOR_SME",
+    .select(["ID_NOTICE_CAN","YEAR","DT_DISPATCH","DT_AWARD",
+             "ISO_COUNTRY_CODE","CAE_TYPE","MAIN_ACTIVITY",
+             "TYPE_OF_CONTRACT","CPV","TAL_LOCATION_NUTS","TOP_TYPE",
+             "WIN_COUNTRY_CODE","B_CONTRACTOR_SME",
              "NUMBER_OFFERS","NUMBER_TENDERS_SME","NUMBER_TENDERS_OTHER_EU",
              "NUMBER_TENDERS_NON_EU","AWARD_VALUE_EURO","AWARD_EST_VALUE_EURO",
+             "B_GPA","B_EU_FUNDS","LOTS_NUMBER","DURATION","VALUE_EURO",
              "INFO_ON_NON_AWARD"])
     .with_columns([
         pl.col("NUMBER_OFFERS").cast(pl.Float64, strict=False),
@@ -92,10 +96,20 @@ can = (
         pl.col("NUMBER_TENDERS_SME").cast(pl.Float64, strict=False),
         pl.col("AWARD_VALUE_EURO").cast(pl.Float64, strict=False),
         pl.col("AWARD_EST_VALUE_EURO").cast(pl.Float64, strict=False),
+        pl.col("VALUE_EURO").cast(pl.Float64, strict=False),
     ])
     .group_by("ID_NOTICE_CAN")
     .agg([
+        pl.col("YEAR").first(),
+        pl.col("DT_DISPATCH").first(),
         pl.col("DT_AWARD").first(),
+        pl.col("ISO_COUNTRY_CODE").first(),
+        pl.col("CAE_TYPE").first(),
+        pl.col("MAIN_ACTIVITY").first(),
+        pl.col("TYPE_OF_CONTRACT").first(),
+        pl.col("CPV").first(),
+        pl.col("TAL_LOCATION_NUTS").first(),
+        pl.col("TOP_TYPE").first(),
         pl.col("WIN_COUNTRY_CODE").first(),
         pl.col("B_CONTRACTOR_SME").first(),
         pl.col("NUMBER_OFFERS").max(),
@@ -104,6 +118,11 @@ can = (
         pl.col("NUMBER_TENDERS_SME").max(),
         pl.col("AWARD_VALUE_EURO").sum(),
         pl.col("AWARD_EST_VALUE_EURO").sum(),
+        pl.col("B_GPA").first(),
+        pl.col("B_EU_FUNDS").first(),
+        pl.col("LOTS_NUMBER").max(),
+        pl.col("DURATION").max(),
+        pl.col("VALUE_EURO").sum(),
         pl.col("INFO_ON_NON_AWARD").first(),
     ])
     .collect(engine="streaming")
@@ -155,11 +174,43 @@ linkage = (
 cfc = cfc.with_columns(pl.col("ID_NOTICE_CN").cast(pl.Int64, strict=False))
 can = can.with_columns(pl.col("ID_NOTICE_CAN").cast(pl.Int64, strict=False))
 
-proc = cfc.join(linkage, on="ID_NOTICE_CN", how="left").join(can, on="ID_NOTICE_CAN", how="left")
+# Join CFC → CAN using only the outcome columns (avoid conflicts with CFC descriptor cols)
+CAN_OUTCOME_COLS = [
+    "ID_NOTICE_CAN","DT_AWARD","WIN_COUNTRY_CODE","B_CONTRACTOR_SME",
+    "NUMBER_OFFERS","NUMBER_TENDERS_OTHER_EU","NUMBER_TENDERS_NON_EU",
+    "NUMBER_TENDERS_SME","AWARD_VALUE_EURO","AWARD_EST_VALUE_EURO","INFO_ON_NON_AWARD",
+]
+proc = cfc.join(linkage, on="ID_NOTICE_CN", how="left").join(
+    can.select(CAN_OUTCOME_COLS), on="ID_NOTICE_CAN", how="left"
+)
 
 n_linked   = proc["ID_NOTICE_CAN"].is_not_null().sum()
 n_unlinked = proc["ID_NOTICE_CAN"].is_null().sum()
-logger.info(f"  Total: {len(proc):,}  Linked: {n_linked:,} ({100*n_linked/len(proc):.1f}%)  Unlinked: {n_unlinked:,}  ({time.time()-t0:.1f}s)")
+
+# Append CAN-only records (direct awards / negotiated w/o call)
+linked_can_ids = linkage["ID_NOTICE_CAN"].drop_nulls()
+can_only = can.filter(~pl.col("ID_NOTICE_CAN").is_in(linked_can_ids)).with_columns([
+    pl.lit(None).cast(pl.Int64).alias("ID_NOTICE_CN"),
+    pl.lit(None).cast(pl.Utf8).alias("DT_APPLICATIONS"),
+    pl.lit(None).cast(pl.Utf8).alias("CRIT_CODE"),
+    pl.lit(None).cast(pl.Float64).alias("CRIT_PRICE_WEIGHT"),
+    pl.lit(None).cast(pl.Utf8).alias("B_FRA_AGREEMENT"),
+    pl.lit(None).cast(pl.Utf8).alias("B_DYN_PURCH_SYST"),
+    pl.lit(None).cast(pl.Utf8).alias("B_ELECTRONIC_AUCTION"),
+    pl.lit(None).cast(pl.Utf8).alias("B_ACCELERATED"),
+    pl.lit(None).cast(pl.Utf8).alias("CANCELLED"),
+    pl.lit(None).cast(pl.Utf8).alias("FUTURE_CAN_ID"),
+    pl.lit("can_only").alias("record_source"),
+])
+proc = proc.with_columns(
+    pl.when(pl.col("ID_NOTICE_CAN").is_not_null())
+      .then(pl.lit("cfc_linked")).otherwise(pl.lit("cfc_unlinked"))
+      .alias("record_source")
+)
+proc = pl.concat([proc, can_only], how="diagonal_relaxed")
+
+n_can_only = (proc["record_source"] == "can_only").sum()
+logger.info(f"  CFC-linked: {n_linked:,}  CFC-unlinked: {n_unlinked:,}  CAN-only: {n_can_only:,}  ({time.time()-t0:.1f}s)")
 
 # ══════════════════════════════════════════════════════════════════
 # STEP 4 — Feature engineering
@@ -304,27 +355,29 @@ KEEP = [
     "n_offers_crossborder","n_offers_noneu","n_offers_sme",
     "cross_border_win","sme_winner",
     "award_value_euro","price_ratio",
-    "WIN_COUNTRY_CODE",
+    "WIN_COUNTRY_CODE","record_source",
 ]
 avail = [c for c in KEEP if c in proc.columns]
 proc_final = proc.select(avail)
 
-linked   = proc_final.filter(pl.col("ID_NOTICE_CAN").is_not_null())
-unlinked = proc_final.filter(pl.col("ID_NOTICE_CAN").is_null())
+trainable = proc_final.filter(pl.col("record_source").is_in(["cfc_linked","can_only"]))
+unlinked  = proc_final.filter(pl.col("record_source") == "cfc_unlinked")
 
-linked.write_parquet(f"{FEAT_DIR}/procedure_records.parquet",  compression="zstd")
-unlinked.write_parquet(f"{FEAT_DIR}/cfc_unlinked.parquet",     compression="zstd")
+trainable.write_parquet(f"{FEAT_DIR}/procedure_records.parquet", compression="zstd")
+unlinked.write_parquet(f"{FEAT_DIR}/cfc_unlinked.parquet",       compression="zstd")
 
 pr_mb = os.path.getsize(f"{FEAT_DIR}/procedure_records.parquet")/1e6
 ul_mb = os.path.getsize(f"{FEAT_DIR}/cfc_unlinked.parquet")/1e6
-logger.info(f"  procedure_records.parquet : {pr_mb:.1f} MB  ({len(linked):,} rows)")
+n_linked   = (trainable["record_source"] == "cfc_linked").sum()
+n_can_only = (trainable["record_source"] == "can_only").sum()
+logger.info(f"  procedure_records.parquet : {pr_mb:.1f} MB  ({len(trainable):,} rows: {n_linked:,} CFC-linked + {n_can_only:,} CAN-only)")
 logger.info(f"  cfc_unlinked.parquet      : {ul_mb:.1f} MB  ({len(unlinked):,} rows)")
 
 # ── Summary ───────────────────────────────────────────────────────
 logger.info("\n"+"="*60)
 logger.info("FEATURE STORE SUMMARY")
 logger.info("="*60)
-df = linked
+df = trainable
 
 def stat(col, label, pct=False):
     s = df[col].drop_nulls()
@@ -332,7 +385,7 @@ def stat(col, label, pct=False):
     if pct: print(f"  {label}: {s.mean()*100:.1f}%  (n={len(s):,})")
     else:   print(f"  {label}: median={s.median():.1f}  mean={s.mean():.1f}  n={len(s):,}")
 
-logger.info(f"\nLinked records: {len(df):,}  |  Columns: {df.width}")
+logger.info(f"\nTrainable records: {len(df):,}  |  Columns: {df.width}")
 logger.info("\n── Timing ──")
 stat("prep_time_days","Prep time (days)")
 stat("proc_duration_days","Procedure duration (days)")
