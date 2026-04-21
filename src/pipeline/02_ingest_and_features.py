@@ -346,12 +346,15 @@ logger.info("\n── Price ──")
 stat("price_ratio","Price ratio (award/estimate)")
 logger.info("\n── Procedure types (top 8) ──")
 for r in df.group_by("TOP_TYPE").agg(pl.len().alias("n")).sort("n",descending=True).head(8).iter_rows(named=True):
-    logger.info(f"  {r['TOP_TYPE']:8s}  {r['n']:>8,}  ({100*r['n']/len(df):.1f}%)")
+    label = str(r['TOP_TYPE'] or "None")
+    logger.info(f"  {label:8s}  {r['n']:>8,}  ({100*r['n']/len(df):.1f}%)")
 logger.info("\n── Top 10 countries ──")
 for r in df.group_by("ISO_COUNTRY_CODE").agg(pl.len().alias("n")).sort("n",descending=True).head(10).iter_rows(named=True):
-    logger.info(f"  {r['ISO_COUNTRY_CODE']:5s}  {r['n']:>8,}  ({100*r['n']/len(df):.1f}%)")
+    label = str(r['ISO_COUNTRY_CODE'] or "None")
+    logger.info(f"  {label:5s}  {r['n']:>8,}  ({100*r['n']/len(df):.1f}%)")
 logger.info("\n── Top 8 CPV sectors ──")
 for r in df.group_by("cpv_sector").agg(pl.len().alias("n")).sort("n",descending=True).head(8).iter_rows(named=True):
-    logger.info(f"  {r['cpv_sector']:35s}  {r['n']:>7,}")
+    label = str(r['cpv_sector'] or "None")
+    logger.info(f"  {label:35s}  {r['n']:>7,}")
 
 logger.info("\n✅ Phase 1b+1c complete.\n")
